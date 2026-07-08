@@ -1,29 +1,21 @@
-import { MiddlewareConsumer, Module } from '@nestjs/common';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { AccountsModule } from './modules/accounts/accounts.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DatabaseModule } from './modules/database/database.module';
-import { LoggerMiddleware } from './modules/config/request-logging.middleware';
-import { LoggerwinstonService } from './utils/service/loggerwinston/loggerwinston.service';
-import { JwtAuthModule } from './modules/jwt-auth/jwt-auth.module';
-import { SharedModule } from './modules/shared/shared.module';
-import { SocketProvider } from './providers/socket/socket';
-import { SocketService } from './utils/service/socket/socket.service';
-import { EventEmitterModule } from '@nestjs/event-emitter';
-import { MarketModule } from './modules/market/market.module';
+import { PacoModule } from './modules/paco/paco.module';
+import { PunteoModule } from './modules/punteo/punteo.module';
 
 @Module({
   imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
     DatabaseModule,
-    JwtAuthModule,
-    SharedModule,
-    EventEmitterModule.forRoot(),
-    MarketModule,
+    AuthModule,
+    AccountsModule,
+    PacoModule,
+    DashboardModule,
+    PunteoModule,
   ],
-  controllers: [AppController],
-  providers: [AppService, LoggerwinstonService, SocketProvider, SocketService],
 })
-export class AppModule {
-  configure(consumer: MiddlewareConsumer) {
-    consumer.apply(LoggerMiddleware).forRoutes('*');
-  }
-}
+export class AppModule {}

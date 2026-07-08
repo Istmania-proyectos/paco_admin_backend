@@ -1,92 +1,64 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import * as net from 'net';
 import * as tls from 'tls';
 
-type MailMessage = {
-  to: string | string[];
+export interface MailMessage {
+  to: string;
   subject: string;
   html: string;
-};
+}
 
 @Injectable()
 export class SmtpMailerService {
-  private readConfig() {
-    const host = process.env.EMAIL_SMTP_HOST;
-    const port = Number(process.env.EMAIL_SMTP_PORT ?? 587);
-    const user = process.env.EMAIL_SMTP_USER;
-    const password = process.env.EMAIL_SMTP_PASSWORD;
-    const from = process.env.EMAIL_FROM ?? user;
+  constructor(private readonly config: ConfigService) {}
+
+  async send(message: MailMessage): Promise<void> {
+    const host = this.config.get<string>('EMAIL_SMTP_HOST');
+    const user = this.config.get<string>('EMAIL_SMTP_USER');
+    const password = this.config.get<string>('EMAIL_SMTP_PASSWORD');
+    const from = this.config.get<string>('EMAIL_FROM') ?? user;
+    const port = Number(this.config.get('EMAIL_SMTP_PORT') ?? 587);
 
     if (!host || !user || !password || !from) {
       throw new InternalServerErrorException(
-        'Configuracion SMTP incompleta: EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD y EMAIL_FROM son requeridos',
+        'Configuración SMTP incompleta: EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD y EMAIL_FROM son requeridos',
       );
     }
 
-    return { host, port, user, password, from };
-  }
-
-  async send(message: MailMessage): Promise<void> {
-    const config = this.readConfig();
-    const socket = await this.connect(config.host, config.port);
-
+    const socket = await this.connect(host, port);
     try {
       await this.expect(socket, [220]);
-      await this.command(
-        socket,
-        `EHLO ${process.env.EMAIL_HELO_HOST ?? 'localhost'}`,
-        [250],
-      );
+      await this.command(socket, 'EHLO paco-admin', [250]);
       await this.command(socket, 'STARTTLS', [220]);
 
-      const secureSocket = tls.connect({
+      const secure = tls.connect({
         socket,
-        servername: config.host,
+        servername: host,
         rejectUnauthorized:
-          process.env.EMAIL_TLS_REJECT_UNAUTHORIZED === 'true',
+          this.config.get('EMAIL_TLS_REJECT_UNAUTHORIZED') === 'true',
       });
-
       await new Promise<void>((resolve, reject) => {
-        secureSocket.once('secureConnect', resolve);
-        secureSocket.once('error', reject);
+        secure.once('secureConnect', resolve);
+        secure.once('error', reject);
       });
 
-      await this.command(
-        secureSocket,
-        `EHLO ${process.env.EMAIL_HELO_HOST ?? 'localhost'}`,
-        [250],
-      );
-      await this.command(secureSocket, 'AUTH LOGIN', [334]);
-      await this.command(
-        secureSocket,
-        Buffer.from(config.user).toString('base64'),
-        [334],
-      );
-      await this.command(
-        secureSocket,
-        Buffer.from(config.password).toString('base64'),
-        [235],
-      );
-
-      const recipients = Array.isArray(message.to) ? message.to : [message.to];
-      await this.command(secureSocket, `MAIL FROM:<${config.from}>`, [250]);
-
-      for (const recipient of recipients) {
-        await this.command(secureSocket, `RCPT TO:<${recipient}>`, [250, 251]);
-      }
-
-      await this.command(secureSocket, 'DATA', [354]);
-      await this.command(
-        secureSocket,
-        `${this.buildMimeMessage(config.from, recipients, message)}\r\n.`,
-        [250],
-      );
-      await this.command(secureSocket, 'QUIT', [221]);
-      secureSocket.end();
+      await this.command(secure, 'EHLO paco-admin', [250]);
+      await this.command(secure, 'AUTH LOGIN', [334]);
+      await this.command(secure, Buffer.from(user).toString('base64'), [334]);
+      await this.command(secure, Buffer.from(password).toString('base64'), [
+        235,
+      ]);
+      await this.command(secure, `MAIL FROM:<${from}>`, [250]);
+      await this.command(secure, `RCPT TO:<${message.to}>`, [250, 251]);
+      await this.command(secure, 'DATA', [354]);
+      await this.command(secure, `${this.mime(from, message)}\r\n.`, [250]);
+      await this.command(secure, 'QUIT', [221]);
+      secure.end();
     } catch (error) {
       socket.destroy();
       throw new InternalServerErrorException(
-        `No se pudo enviar correo: ${error.message}`,
+        `No se pudo enviar correo: ${(error as Error).message}`,
       );
     }
   }
@@ -94,7 +66,9 @@ export class SmtpMailerService {
   private connect(host: string, port: number): Promise<net.Socket> {
     return new Promise((resolve, reject) => {
       const socket = net.connect({ host, port }, () => resolve(socket));
-      socket.setTimeout(Number(process.env.EMAIL_SMTP_TIMEOUT_MS ?? 10000));
+      socket.setTimeout(
+        Number(this.config.get('EMAIL_SMTP_TIMEOUT_MS') ?? 10000),
+      );
       socket.once('timeout', () => reject(new Error('Timeout SMTP')));
       socket.once('error', reject);
     });
@@ -103,66 +77,47 @@ export class SmtpMailerService {
   private command(
     socket: net.Socket | tls.TLSSocket,
     value: string,
-    expectedCodes: number[],
-  ): Promise<string> {
+    expected: number[],
+  ) {
     socket.write(`${value}\r\n`);
-    return this.expect(socket, expectedCodes);
+    return this.expect(socket, expected);
   }
 
   private expect(
     socket: net.Socket | tls.TLSSocket,
-    expectedCodes: number[],
+    expected: number[],
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       let response = '';
-
       const onData = (chunk: Buffer) => {
         response += chunk.toString('utf8');
-        const lines = response.trimEnd().split(/\r?\n/);
-        const lastLine = lines[lines.length - 1] ?? '';
-
-        if (!/^\d{3} /.test(lastLine)) {
-          return;
-        }
+        const last = response.trimEnd().split(/\r?\n/).at(-1) ?? '';
+        if (!/^\d{3} /.test(last)) return;
 
         socket.off('data', onData);
         socket.off('error', onError);
-
-        const code = Number(lastLine.slice(0, 3));
-        if (expectedCodes.includes(code)) {
-          resolve(response);
-          return;
-        }
-
-        reject(new Error(response.trim()));
+        const code = Number(last.slice(0, 3));
+        code && expected.includes(code)
+          ? resolve(response)
+          : reject(new Error(response.trim()));
       };
-
       const onError = (error: Error) => {
         socket.off('data', onData);
         reject(error);
       };
-
       socket.on('data', onData);
       socket.once('error', onError);
     });
   }
 
-  private buildMimeMessage(
-    from: string,
-    recipients: string[],
-    message: MailMessage,
-  ): string {
-    const encodedSubject = `=?UTF-8?B?${Buffer.from(message.subject).toString(
-      'base64',
-    )}?=`;
-
+  private mime(from: string, message: MailMessage): string {
+    const subject = Buffer.from(message.subject).toString('base64');
     return [
-      `From: "Market Online" <${from}>`,
-      `To: ${recipients.join(', ')}`,
-      `Subject: ${encodedSubject}`,
+      `From: "Paco Admin" <${from}>`,
+      `To: ${message.to}`,
+      `Subject: =?UTF-8?B?${subject}?=`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: 8bit',
       '',
       message.html,
     ].join('\r\n');
