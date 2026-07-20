@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { IdentityService } from '../auth/identity.service';
 import { RegistrationDto } from './dto/registration.dto';
 import {
+  CreateManagedUserDto,
+  UpdateManagedUserDto,
+} from './dto/manage-user.dto';
+import {
   ResetPasswordAdminDto,
   ResetPasswordDto,
 } from './dto/reset-password.dto';
@@ -16,6 +20,14 @@ export class AccountsService {
 
   register(model: RegistrationDto) {
     return this.identity.create(model.Email, model.Password);
+  }
+
+  createUser(model: CreateManagedUserDto) {
+    return this.identity.createManagedUser(model);
+  }
+
+  updateUser(userId: string, model: UpdateManagedUserDto) {
+    return this.identity.updateManagedUser(userId, model);
   }
 
   async resetPassword(userId: string, model: ResetPasswordDto) {

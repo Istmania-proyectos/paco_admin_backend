@@ -41,6 +41,53 @@ este backend trabaja sobre las tablas Identity existentes.
 | GET | `/api/Paco/Correo` | Bearer JWT |
 | GET | `/api/Dashboard/Home` | Bearer JWT |
 | GET | `/api/Punteo` | Pública |
+| GET | `/api/Tickets` | Bearer JWT |
+| POST | `/api/Tickets` | Bearer JWT |
+| POST | `/api/Tickets/:id/transiciones` | Bearer JWT |
+| GET | `/api/Tickets/respuesta-vendedor?token=...` | Pública con token |
+| POST | `/api/Tickets/respuesta-vendedor` | Pública con token |
+
+## Módulo de tickets
+
+El esquema y los procedimientos del módulo están en `sql/tickets.sql`.
+TypeORM mantiene únicamente el mapeo (`synchronize: false`), por lo que el
+script debe revisarse y ejecutarse explícitamente en la base correspondiente.
+
+Las lecturas usan `dbo.PACO_GET_TICKET`: opción 1 para la bandeja, 2 para el
+encabezado, 3 para los detalles, 4 para los planes de acción y 5 para el
+historial. Las creaciones y transiciones usan `dbo.PACO_INSERT_TICKET`.
+
+Al crear o avanzar un ticket, el backend resuelve el siguiente destinatario,
+envía el correo mediante SMTP y registra el resultado en
+`dbo.tbl_Ticket_Notificacion`. Configure `TICKETS_FRONTEND_URL` con la URL base
+del detalle del ticket para incluir el enlace en el mensaje.
+
+Cuando el ticket pasa a `PENDIENTE_CIERRE`, el destinatario es el correo del
+vendedor recibido en la migración (`correoVendedor`). El backend genera un
+token opaco de un solo uso, guarda únicamente su hash SHA-256 y construye el
+enlace público con:
+
+```env
+TICKETS_SELLER_RESPONSE_URL=https://admin.ejemplo.com/ticket/responder
+TICKETS_SELLER_TOKEN_EXPIRATION_HOURS=72
+```
+
+El vendedor puede cerrar o reabrir el ticket sin una cuenta de plataforma. La
+validación, transición, historial y consumo del token se ejecutan en una sola
+transacción SQL. Un token inexistente responde 404, uno consumido o cuyo ticket
+ya fue procesado responde 409 y uno vencido responde 410.
+
+Por ejemplo, si Angular usa la ruta `/home/tickets/:id`:
+
+```env
+TICKETS_FRONTEND_URL=https://admin.ejemplo.com/home/tickets
+```
+
+El servidor que publica Angular debe reenviar las rutas que no correspondan a
+archivos hacia `index.html`; de lo contrario, abrir directamente el enlace del
+correo devolverá 404. Para IIS se incluye un ejemplo en
+`docs/angular-iis-web.config.example`. Debe copiarse como `web.config` a la raíz
+del artefacto Angular publicado y requiere el módulo IIS URL Rewrite.
 
 ## Validación
 

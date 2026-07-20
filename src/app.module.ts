@@ -6,6 +6,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DatabaseModule } from './modules/database/database.module';
 import { PacoModule } from './modules/paco/paco.module';
 import { PunteoModule } from './modules/punteo/punteo.module';
+import { TicketsModule } from './modules/tickets/tickets.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { PunteoModule } from './modules/punteo/punteo.module';
     PacoModule,
     DashboardModule,
     PunteoModule,
+    TicketsModule,
   ],
 })
 export class AppModule {}

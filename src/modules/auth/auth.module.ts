@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ApiUserGuard } from './api-user.guard';
+import { AdminGuard } from './admin.guard';
 import { AspNetPasswordService } from './aspnet-password.service';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -36,7 +37,14 @@ import { JwtStrategy } from './jwt.strategy';
     AspNetPasswordService,
     JwtStrategy,
     ApiUserGuard,
+    AdminGuard,
   ],
-  exports: [IdentityService, AspNetPasswordService, ApiUserGuard, JwtModule],
+  exports: [
+    IdentityService,
+    AspNetPasswordService,
+    ApiUserGuard,
+    AdminGuard,
+    JwtModule,
+  ],
 })
 export class AuthModule {}

@@ -413,6 +413,228 @@ export class PedidoUsuarioViewEntity {
   MinutosPendientes?: number;
 }
 
+@Entity({ name: 'tbl_Ticket', schema: 'dbo', synchronize: false })
+export class TicketEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  NumeroTicket: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  SistemaOrigen: string;
+
+  @Column({ type: 'bigint', nullable: true })
+  IdRespuestaOrigen?: string;
+
+  @Column({ type: 'int', nullable: true })
+  IdFormularioOrigen?: number;
+
+  @Column({ type: 'varchar', length: 50 })
+  CodigoCliente: string;
+
+  @Column({ type: 'nvarchar', length: 200 })
+  NombreCliente: string;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  CodigoVendedor?: string;
+
+  @Column({ type: 'nvarchar', length: 200, nullable: true })
+  NombreVendedor?: string;
+
+  @Column({ type: 'nvarchar', length: 256, nullable: true })
+  CorreoVendedor?: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  TipoTicket: string;
+
+  @Column({ type: 'nvarchar', length: 250 })
+  Titulo: string;
+
+  @Column({ type: 'nvarchar', length: 'MAX', nullable: true })
+  Descripcion?: string;
+
+  @Column({ type: 'varchar', length: 20 })
+  Prioridad: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  Estado: string;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaRespuestaOrigen?: Date;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaCreacion: Date;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaActualizacion?: Date;
+
+  @Column({ type: 'date', nullable: true })
+  FechaVencimiento?: Date;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaCierre?: Date;
+
+  @Column({ type: 'nvarchar', length: 450 })
+  CreadoPor: string;
+
+  @Column({ type: 'nvarchar', length: 450, nullable: true })
+  ResponsableActual?: string;
+
+  @Column({ type: 'bit' })
+  Activo: boolean;
+}
+
+@Entity({ name: 'tbl_Ticket_Detalle', schema: 'dbo', synchronize: false })
+export class TicketDetalleEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdTicketDetalle: string;
+
+  @Column({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'bigint', nullable: true })
+  IdDetalleOrigen?: string;
+
+  @Column({ type: 'int', nullable: true })
+  IdPreguntaOrigen?: number;
+
+  @Column({ type: 'nvarchar', length: 500, nullable: true })
+  Pregunta?: string;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  TipoRespuesta?: string;
+
+  @Column({ type: 'nvarchar', length: 'MAX', nullable: true })
+  Valor?: string;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaCreacion: Date;
+}
+
+@Entity({ name: 'tbl_Ticket_Plan_Accion', schema: 'dbo', synchronize: false })
+export class TicketPlanAccionEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdPlanAccion: string;
+
+  @Column({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  TipoAccion: string;
+
+  @Column({ type: 'nvarchar', length: 'MAX' })
+  Descripcion: string;
+
+  @Column({ type: 'date', nullable: true })
+  FechaCompromiso?: Date;
+
+  @Column({ type: 'nvarchar', length: 450, nullable: true })
+  Responsable?: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  Estado: string;
+
+  @Column({ type: 'nvarchar', length: 450 })
+  CreadoPor: string;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaCreacion: Date;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaActualizacion?: Date;
+}
+
+@Entity({ name: 'tbl_Ticket_Historial', schema: 'dbo', synchronize: false })
+export class TicketHistorialEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdHistorial: string;
+
+  @Column({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  EstadoAnterior?: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  EstadoNuevo: string;
+
+  @Column({ type: 'varchar', length: 50 })
+  Accion: string;
+
+  @Column({ type: 'nvarchar', length: 'MAX', nullable: true })
+  Comentario?: string;
+
+  @Column({ type: 'nvarchar', length: 450 })
+  UsuarioId: string;
+
+  @Column({ type: 'nvarchar', length: 256, nullable: true })
+  NombreUsuario?: string;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  RolUsuario?: string;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  Fecha: Date;
+}
+
+@Entity({ name: 'tbl_Ticket_Notificacion', schema: 'dbo', synchronize: false })
+export class TicketNotificacionEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdNotificacion: string;
+
+  @Column({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'nvarchar', length: 450, nullable: true })
+  UsuarioDestino?: string;
+
+  @Column({ type: 'nvarchar', length: 256 })
+  CorreoDestino: string;
+
+  @Column({ type: 'varchar', length: 30 })
+  EstadoTicket: string;
+
+  @Column({ type: 'varchar', length: 20 })
+  EstadoEnvio: string;
+
+  @Column({ type: 'nvarchar', length: 2000, nullable: true })
+  Error?: string;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaCreacion: Date;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaEnvio?: Date;
+}
+
+@Entity({ name: 'tbl_Ticket_Token_Vendedor', schema: 'dbo', synchronize: false })
+export class TicketSellerTokenEntity {
+  @PrimaryGeneratedColumn({ type: 'bigint' })
+  IdToken: string;
+
+  @Column({ type: 'bigint' })
+  IdTicket: string;
+
+  @Column({ type: 'binary', length: 32 })
+  TokenHash: Buffer;
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  CodigoVendedor?: string;
+
+  @Column({ type: 'nvarchar', length: 256 })
+  CorreoVendedor: string;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaExpiracion: Date;
+
+  @Column({ type: 'datetime2', precision: 3 })
+  FechaCreacion: Date;
+
+  @Column({ type: 'datetime2', precision: 3, nullable: true })
+  FechaUso?: Date;
+}
+
 export const legacyEntities = [
   AspNetRoleClaimEntity,
   AspNetRoleEntity,
@@ -429,4 +651,10 @@ export const legacyEntities = [
   SupervisorGerenteEntity,
   VendedorEntity,
   PedidoUsuarioViewEntity,
+  TicketEntity,
+  TicketDetalleEntity,
+  TicketPlanAccionEntity,
+  TicketHistorialEntity,
+  TicketNotificacionEntity,
+  TicketSellerTokenEntity,
 ];

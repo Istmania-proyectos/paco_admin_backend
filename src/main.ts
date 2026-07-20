@@ -1,7 +1,7 @@
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { json, urlencoded } from 'express';
 import { networkInterfaces } from 'os';
 import { AppModule } from './app.module';
 
@@ -13,17 +13,15 @@ function getNetworkUrls(port: number): string[] {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bodyParser: false,
+  });
   const logger = new Logger('Bootstrap');
   app.getHttpAdapter().getInstance().set('etag', false);
 
-  app.use(json({ limit: process.env.REQUEST_BODY_LIMIT ?? '20mb' }));
-  app.use(
-    urlencoded({
-      extended: true,
-      limit: process.env.REQUEST_BODY_LIMIT ?? '20mb',
-    }),
-  );
+  const bodyLimit = process.env.REQUEST_BODY_LIMIT ?? '20mb';
+  app.useBodyParser('json', { limit: bodyLimit });
+  app.useBodyParser('urlencoded', { extended: true, limit: bodyLimit });
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
