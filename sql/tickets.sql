@@ -39,6 +39,22 @@ BEGIN
 END
 GO
 
+/* Lectura de formularios CheckIn para importar tickets globales. Cada grupo
+   (formulario, respuesta) se convierte en un ticket; sus preguntas en detalle. */
+CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET_CHECKIN @Formulario INT = 14
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT RD.respuesta, RD.pregunta, P.descripcion AS pregunta_descripcion,
+           RD.valor, RD.formulario, F.descripcion AS formulario_descripcion,
+           RD.tipo_pregunta
+    FROM [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Respuesta_Detalle] RD
+    LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Preguntas] P ON P.pregunta = RD.pregunta
+    LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Formulario] F ON F.formulario = RD.formulario
+    WHERE RD.formulario = @Formulario;
+END
+GO
+
 IF COL_LENGTH('dbo.tbl_Ticket', 'CorreoVendedor') IS NULL
     ALTER TABLE dbo.tbl_Ticket ADD CorreoVendedor NVARCHAR(256) NULL;
 GO
@@ -63,7 +79,7 @@ BEGIN
         IdDetalleOrigen BIGINT NULL,
         IdPreguntaOrigen INT NULL,
         Pregunta NVARCHAR(500) NULL,
-        TipoRespuesta VARCHAR(50) NULL,
+        TipoRespuesta VARCHAR(250) NULL,
         Valor NVARCHAR(MAX) NULL,
         FechaCreacion DATETIME2(3) NOT NULL CONSTRAINT DF_TicketDetalle_Fecha DEFAULT (SYSUTCDATETIME()),
         CONSTRAINT FK_TicketDetalle_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket)
@@ -104,7 +120,7 @@ BEGIN
         Comentario NVARCHAR(MAX) NULL,
         UsuarioId NVARCHAR(450) NOT NULL,
         NombreUsuario NVARCHAR(256) NULL,
-        RolUsuario VARCHAR(100) NULL,
+        RolUsuario NVARCHAR(500) NULL,
         Fecha DATETIME2(3) NOT NULL CONSTRAINT DF_TicketHistorial_Fecha DEFAULT (SYSUTCDATETIME()),
         CONSTRAINT FK_TicketHistorial_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket)
     );
@@ -419,7 +435,7 @@ BEGIN
             IdDetalleOrigen BIGINT '$.idDetalleOrigen',
             IdPreguntaOrigen INT '$.idPreguntaOrigen',
             Pregunta NVARCHAR(500) '$.pregunta',
-            TipoRespuesta VARCHAR(50) '$.tipoRespuesta',
+            TipoRespuesta VARCHAR(250) '$.tipoRespuesta',
             Valor NVARCHAR(MAX) '$.valor'
         ) D;
 

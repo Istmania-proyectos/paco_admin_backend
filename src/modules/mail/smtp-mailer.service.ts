@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as net from 'net';
 import * as tls from 'tls';
@@ -11,6 +15,8 @@ export interface MailMessage {
 
 @Injectable()
 export class SmtpMailerService {
+  private readonly logger = new Logger(SmtpMailerService.name);
+
   constructor(private readonly config: ConfigService) {}
 
   async send(message: MailMessage): Promise<void> {
@@ -25,6 +31,22 @@ export class SmtpMailerService {
         'Configuración SMTP incompleta: EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD y EMAIL_FROM son requeridos',
       );
     }
+
+    const publicPaths = [...message.html.matchAll(/href="([^"]+)"/gi)].map(
+      (match) => {
+        try {
+          const url = new URL(match[1]);
+          return `${url.origin}${url.pathname}`;
+        } catch {
+          return '<enlace-relativo>';
+        }
+      },
+    );
+    this.logger.log(
+      `Preparando correo para ${message.to}; rutas públicas: ${
+        publicPaths.join(', ') || '<sin enlace>'
+      }`,
+    );
 
     const socket = await this.connect(host, port);
     try {

@@ -50,6 +50,10 @@ este backend trabaja sobre las tablas Identity existentes.
 ## Módulo de tickets
 
 El esquema y los procedimientos del módulo están en `sql/tickets.sql`.
+
+La simulación, agrupación automática por dependencia/jefe de marca y la
+renovación mensual están documentadas en
+`docs/tickets-automatizacion-checkin.md`.
 TypeORM mantiene únicamente el mapeo (`synchronize: false`), por lo que el
 script debe revisarse y ejecutarse explícitamente en la base correspondiente.
 

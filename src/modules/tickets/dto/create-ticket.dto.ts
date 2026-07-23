@@ -32,7 +32,7 @@ export class CreateTicketDetailDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(50)
+  @MaxLength(250)
   tipoRespuesta?: string;
 
   @IsString()
@@ -78,6 +78,21 @@ export class CreateTicketDto {
   @IsEmail()
   @MaxLength(256)
   correoVendedor: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(256)
+  correoJefeMarca?: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(256)
+  correoMercadeo?: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(256)
+  correoGerenciaGeneral?: string;
 
   @IsString()
   @IsNotEmpty()
