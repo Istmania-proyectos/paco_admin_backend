@@ -184,8 +184,9 @@ describe('TicketsService automation', () => {
     );
   });
 
-  it('fuerza la ruta publica de cierre aunque la configuracion apunte al login', () => {
-    configValues.TICKETS_SELLER_RESPONSE_URL = 'http://localhost:4200/login';
+  it('conserva el subdirectorio y hash de la ruta publica de cierre', () => {
+    configValues.TICKETS_SELLER_RESPONSE_URL =
+      'http://10.10.10.9:8081/paco-admin-front/#/ticket/responder';
     const { service } = setup([]);
 
     const html = (service as any).sellerEmailTemplate(
@@ -205,7 +206,7 @@ describe('TicketsService automation', () => {
     );
 
     expect(html).toContain(
-      'http://localhost:4200/ticket/responder?token=token-prueba',
+      'http://10.10.10.9:8081/paco-admin-front/#/ticket/responder?token=token-prueba',
     );
     expect(html).not.toContain('/login?token=');
     delete configValues.TICKETS_SELLER_RESPONSE_URL;

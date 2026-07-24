@@ -709,11 +709,15 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     if (!configuredUrl) {
       throw new Error('TICKETS_SELLER_RESPONSE_URL no está configurado.');
     }
-    const publicUrl = new URL(configuredUrl);
-    publicUrl.pathname = '/ticket/responder';
-    publicUrl.search = '';
-    publicUrl.hash = '';
-    const baseUrl = publicUrl.toString().replace(/\/$/, '');
+    const baseUrl = configuredUrl.trim().replace(/[?&]token=[^&#]*/i, '');
+    const publicUrl = new URL(baseUrl);
+    if (
+      !`${publicUrl.pathname}${publicUrl.hash}`.includes('/ticket/responder')
+    ) {
+      throw new Error(
+        'TICKETS_SELLER_RESPONSE_URL debe apuntar a /ticket/responder.',
+      );
+    }
     const link = baseUrl
       ? `${baseUrl}${
           baseUrl.includes('?') ? '&' : '?'
