@@ -33,6 +33,11 @@ type AuthenticatedRequest = Request & { user: JwtPayload };
 export class TicketsController {
   constructor(private readonly tickets: TicketsService) {}
 
+  @Get('configuracion/enlaces-publicos')
+  getPublicLinkConfiguration() {
+    return this.tickets.getPublicLinkConfiguration();
+  }
+
   @Get()
   getTickets(
     @Query() query: TicketQueryDto,

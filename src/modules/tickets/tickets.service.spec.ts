@@ -212,6 +212,19 @@ describe('TicketsService automation', () => {
     delete configValues.TICKETS_SELLER_RESPONSE_URL;
   });
 
+  it('construye ambos enlaces desde una unica URL publica del frontend', () => {
+    configValues.TICKETS_PUBLIC_FRONTEND_URL =
+      'http://10.10.10.9:8081/paco-admin-front/';
+    const { service } = setup([]);
+
+    expect(service.getPublicLinkConfiguration()).toEqual({
+      aprobacion: 'http://10.10.10.9:8081/paco-admin-front/#/ticket/aprobar',
+      cierreVendedor:
+        'http://10.10.10.9:8081/paco-admin-front/#/ticket/responder',
+    });
+    delete configValues.TICKETS_PUBLIC_FRONTEND_URL;
+  });
+
   it('incluye plan, responsable y comentarios en el resumen del flujo', async () => {
     const { service, database } = setup([]);
     database.executeProcedure.mockImplementation(

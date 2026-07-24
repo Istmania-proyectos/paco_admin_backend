@@ -134,14 +134,19 @@ export class SmtpMailerService {
 
   private mime(from: string, message: MailMessage): string {
     const subject = Buffer.from(message.subject).toString('base64');
+    const encodedHtml = Buffer.from(message.html, 'utf8')
+      .toString('base64')
+      .match(/.{1,76}/g)
+      ?.join('\r\n');
     return [
       `From: "Paco Admin" <${from}>`,
       `To: ${message.to}`,
       `Subject: =?UTF-8?B?${subject}?=`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
       '',
-      message.html,
+      encodedHtml ?? '',
     ].join('\r\n');
   }
 }

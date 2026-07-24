@@ -118,6 +118,19 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     });
   }
 
+  getPublicLinkConfiguration() {
+    return {
+      aprobacion: this.publicTicketResponseUrl(
+        'ticket/aprobar',
+        'TICKETS_APPROVAL_RESPONSE_URL',
+      ),
+      cierreVendedor: this.publicTicketResponseUrl(
+        'ticket/responder',
+        'TICKETS_SELLER_RESPONSE_URL',
+      ),
+    };
+  }
+
   async create(dto: CreateTicketDto, user: JwtPayload) {
     const result = await this.database.executeProcedure<TicketTransitionResult>(
       'PACO_INSERT_TICKET',
@@ -540,9 +553,10 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         Expira: expiration.toISOString(),
       },
     );
-    const base = this.config.get<string>('TICKETS_APPROVAL_RESPONSE_URL');
-    if (!base)
-      throw new Error('TICKETS_APPROVAL_RESPONSE_URL no esta configurado.');
+    const base = this.publicTicketResponseUrl(
+      'ticket/aprobar',
+      'TICKETS_APPROVAL_RESPONSE_URL',
+    );
     const link = `${base}${
       base.includes('?') ? '&' : '?'
     }token=${encodeURIComponent(token)}`;
@@ -703,21 +717,10 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     token: string,
     answers: string,
   ) {
-    const configuredUrl = this.config.get<string>(
+    const baseUrl = this.publicTicketResponseUrl(
+      'ticket/responder',
       'TICKETS_SELLER_RESPONSE_URL',
     );
-    if (!configuredUrl) {
-      throw new Error('TICKETS_SELLER_RESPONSE_URL no está configurado.');
-    }
-    const baseUrl = configuredUrl.trim().replace(/[?&]token=[^&#]*/i, '');
-    const publicUrl = new URL(baseUrl);
-    if (
-      !`${publicUrl.pathname}${publicUrl.hash}`.includes('/ticket/responder')
-    ) {
-      throw new Error(
-        'TICKETS_SELLER_RESPONSE_URL debe apuntar a /ticket/responder.',
-      );
-    }
     const link = baseUrl
       ? `${baseUrl}${
           baseUrl.includes('?') ? '&' : '?'
@@ -741,6 +744,30 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private hashToken(token: string) {
     const normalizedToken = token.replace(/\s+/g, '');
     return createHash('sha256').update(normalizedToken, 'utf8').digest('hex');
+  }
+
+  private publicTicketResponseUrl(route: string, legacyKey: string) {
+    const publicFrontendUrl = this.config
+      .get<string>('TICKETS_PUBLIC_FRONTEND_URL')
+      ?.trim();
+    if (publicFrontendUrl) {
+      const url = new URL(publicFrontendUrl);
+      url.search = '';
+      url.hash = '';
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
+      return `${url.toString()}#/${route}`;
+    }
+
+    const legacyUrl = this.config.get<string>(legacyKey)?.trim();
+    if (!legacyUrl) {
+      throw new Error(`Configure TICKETS_PUBLIC_FRONTEND_URL o ${legacyKey}.`);
+    }
+    const sanitizedUrl = legacyUrl.replace(/[?&]token=[^&#]*/i, '');
+    const parsedUrl = new URL(sanitizedUrl);
+    if (!`${parsedUrl.pathname}${parsedUrl.hash}`.includes(`/${route}`)) {
+      throw new Error(`${legacyKey} debe apuntar a /${route}.`);
+    }
+    return sanitizedUrl;
   }
 
   private assertSellerTokenStatus(status: string) {

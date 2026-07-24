@@ -21,7 +21,7 @@ npm install
 npm run start:dev
 ```
 
-Swagger queda disponible en `http://localhost:3045/swagger`.
+Swagger queda disponible en `http://localhost:5504/swagger`.
 
 Para que los JWT emitidos por ASP.NET sigan siendo válidos, configure
 `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` con los mismos valores del
