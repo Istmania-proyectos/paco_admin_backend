@@ -4,12 +4,61 @@ import {
   IsDateString,
   IsEmail,
   IsIn,
-  IsNotEmpty,
+  IsInt,
   IsOptional,
   IsString,
   MaxLength,
+  Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class ApprovalProductResponseDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  idTicketProducto: number;
+
+  @IsIn(['PROPONER_PLAN', 'APROBAR', 'RECHAZAR', 'INICIAR_EJECUCION'])
+  decision:
+    | 'PROPONER_PLAN'
+    | 'APROBAR'
+    | 'RECHAZAR'
+    | 'INICIAR_EJECUCION';
+
+  @IsOptional()
+  @IsIn([
+    'CAMBIO',
+    'DEVOLUCION',
+    'DESCUENTO',
+    'REUBICACION',
+    'PROMOCION',
+    'DEGUSTACION',
+    'NOTA_CREDITO',
+    'OTRO',
+  ])
+  tipoAccion?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  descripcionPlan?: string;
+
+  @IsOptional()
+  @IsDateString()
+  fechaCompromiso?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(450)
+  responsable?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  comentario?: string;
+}
 
 export class ApprovalTicketTokenDto {
   @IsString()
@@ -19,6 +68,7 @@ export class ApprovalTicketTokenDto {
 }
 
 export class ApprovalTicketResponseDto extends ApprovalTicketTokenDto {
+  @IsOptional()
   @IsIn([
     'PROPONER_PLAN',
     'APROBAR',
@@ -32,6 +82,13 @@ export class ApprovalTicketResponseDto extends ApprovalTicketTokenDto {
     | 'RECHAZAR'
     | 'INICIAR_EJECUCION'
     | 'SOLICITAR_CIERRE';
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => ApprovalProductResponseDto)
+  productos?: ApprovalProductResponseDto[];
 
   @IsOptional()
   @IsIn([
@@ -66,8 +123,8 @@ export class ApprovalTicketResponseDto extends ApprovalTicketTokenDto {
   @IsEmail({}, { each: true })
   correosCc?: string[];
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(2000)
-  comentario: string;
+  comentario?: string;
 }

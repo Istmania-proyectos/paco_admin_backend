@@ -368,9 +368,17 @@ BEGIN
                 ELSE 'VALIDO'
             END TokenEstado,
             T.NumeroTicket, T.CodigoCliente, T.NombreCliente, T.Titulo,
-            T.Descripcion, T.Estado, T.FechaCreacion
+            T.Descripcion, T.Estado, T.FechaCreacion,
+            P.TipoAccion Motivo, P.Descripcion PlanAccion,
+            P.Responsable PlanResponsable, P.FechaCompromiso
         FROM dbo.tbl_Ticket_Token_Vendedor V
         INNER JOIN dbo.tbl_Ticket T ON T.IdTicket = V.IdTicket
+        OUTER APPLY (
+            SELECT TOP (1) PA.TipoAccion, PA.Descripcion, PA.Responsable, PA.FechaCompromiso
+            FROM dbo.tbl_Ticket_Plan_Accion PA
+            WHERE PA.IdTicket = T.IdTicket
+            ORDER BY PA.IdPlanAccion DESC
+        ) P
         WHERE V.TokenHash = TRY_CONVERT(VARBINARY(32), @Param1, 2);
         RETURN;
     END

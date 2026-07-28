@@ -50,6 +50,7 @@ interface TicketDelivery {
 
 interface SellerTokenLookup {
   TokenEstado: 'VALIDO' | 'USADO' | 'VENCIDO' | 'PROCESADO';
+  IdTicket: string | number;
   NumeroTicket: string;
   CodigoCliente: string;
   NombreCliente: string;
@@ -134,13 +135,11 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     fechaDesde?: string,
     fechaHasta?: string,
   ) {
-    return this.database.executeProcedure('PACO_GET_TICKET', {
-      Option: '8',
-      Param1: estado ?? '',
-      Param2: buscar?.trim() ?? '',
-      Param3: fechaDesde ?? '',
-      Param4: fechaHasta ?? '',
-      Param5: '',
+    return this.database.executeProcedure('PACO_TICKET_PRODUCTOS_EXPORTAR', {
+      Estado: estado ?? '',
+      Buscar: buscar?.trim() ?? '',
+      FechaDesde: fechaDesde || null,
+      FechaHasta: fechaHasta || null,
     });
   }
 
@@ -163,6 +162,13 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         'TICKETS_SELLER_RESPONSE_URL',
       ),
     };
+  }
+
+  getProducts(id: string) {
+    return this.database.executeProcedure('PACO_TICKET_PRODUCTOS_GET', {
+      IdTicket: id,
+      Etapa: '',
+    });
   }
 
   async create(dto: CreateTicketDto, user: JwtPayload) {
@@ -229,8 +235,15 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     });
 
     if (execute) {
+      const notifiedTickets = new Set<string>();
       for (const row of filteredRows) {
-        if (row.IdTicket && Number(row.RequiereNotificacion) === 1) {
+        const ticketId = String(row.IdTicket ?? '');
+        if (
+          ticketId &&
+          Number(row.RequiereNotificacion) === 1 &&
+          !notifiedTickets.has(ticketId)
+        ) {
+          notifiedTickets.add(ticketId);
           await this.notifySafely(row);
         }
       }
@@ -471,32 +484,47 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getSellerTicket(token: string) {
+    const hash = this.hashToken(token);
     const result = await this.database.executeProcedure<SellerTokenLookup>(
-      'PACO_GET_TICKET',
-      {
-        Option: '7',
-        Param1: this.hashToken(token),
-        Param2: '',
-        Param3: '',
-        Param4: '',
-        Param5: '',
-      },
+      'PACO_TICKET_PRODUCTOS_GET_VENDEDOR',
+      { HashHex: hash },
     );
     const ticket = result[0];
     if (!ticket) throw new NotFoundException('Token inexistente.');
     this.assertSellerTokenStatus(ticket.TokenEstado);
     const { TokenEstado: _tokenStatus, ...response } = ticket;
-    return response;
+    const productos = await this.database.executeProcedure<any>(
+      'PACO_TICKET_PRODUCTOS_GET',
+      { IdTicket: String(ticket.IdTicket), Etapa: 'VENDEDOR' },
+    );
+    return { ...response, Productos: productos };
   }
 
   async respondAsSeller(dto: SellerTicketResponseDto) {
+    if (dto.productos?.length) {
+      const result =
+        await this.database.executeProcedure<SellerResponseResult>(
+          'PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR',
+          {
+            HashHex: this.hashToken(dto.token),
+            Json: JSON.stringify({ productos: dto.productos }),
+          },
+        );
+      const response = result[0];
+      if (!response) throw new NotFoundException('Token inexistente.');
+      await this.notifySafely(response);
+      return {
+        NumeroTicket: response.NumeroTicket,
+        Estado: response.Estado,
+      };
+    }
     const result = await this.database.executeProcedure<SellerResponseResult>(
       'PACO_INSERT_TICKET',
       {
         Option: '6',
         Param1: this.hashToken(dto.token),
-        Param2: dto.accion,
-        Param3: dto.comentario,
+        Param2: dto.accion ?? '',
+        Param3: dto.comentario ?? '',
         Param4: '',
         Param5: '',
       },
@@ -534,20 +562,43 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getApprovalTicket(token: string) {
+    const hash = this.hashToken(token);
     const rows = await this.database.executeProcedure<any>(
       'PACO_TICKET_GET_APROBACION',
-      { Hash: this.hashToken(token) },
+      { HashHex: hash },
     );
     const item = rows[0];
     if (!item) throw new NotFoundException('Enlace inexistente.');
     this.assertSellerTokenStatus(item.TokenEstado);
-    return item;
+    const productos = await this.database.executeProcedure<any>(
+      'PACO_TICKET_PRODUCTOS_GET',
+      { IdTicket: String(item.IdTicket), Etapa: item.Etapa },
+    );
+    return { ...item, Productos: productos };
   }
   async respondApproval(dto: ApprovalTicketResponseDto) {
     const { token, ...body } = dto;
+    if (body.productos?.length) {
+      const rows = await this.database.executeProcedure<any>(
+        'PACO_TICKET_PRODUCTOS_RESPONDER_APROBACION',
+        { HashHex: this.hashToken(token), Json: JSON.stringify(body) },
+      );
+      const result = rows[0];
+      if (result) {
+        if (
+          body.productos.some(
+            (product) => product.decision === 'INICIAR_EJECUCION',
+          )
+        ) {
+          await this.sendExecutionCopies(result, body.correosCc);
+        }
+        await this.notifySafely(result);
+      }
+      return { estado: result?.Estado };
+    }
     const rows = await this.database.executeProcedure<any>(
       'PACO_TICKET_RESPONDER_APROBACION',
-      { Hash: this.hashToken(token), Json: JSON.stringify(body) },
+      { HashHex: this.hashToken(token), Json: JSON.stringify(body) },
     );
     const result = rows[0];
     if (result) {
@@ -591,6 +642,37 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async notifyNextRecipients(transition: TicketTransitionResult) {
+    const productDestinations =
+      await this.database.executeProcedure<any>(
+        'PACO_TICKET_PRODUCTOS_DESTINOS',
+        { IdTicket: String(transition.IdTicket) },
+      );
+    const validProductDestinations = productDestinations.filter(
+      (destination) => destination?.Etapa && destination?.CorreoDestino,
+    );
+    if (validProductDestinations.length) {
+      for (const destination of validProductDestinations) {
+        if (destination.Etapa !== 'VENDEDOR') {
+          await this.sendApprovalEmail(destination);
+          continue;
+        }
+        await this.sendAndLog({
+          IdTicket: destination.IdTicket,
+          UserId:
+            destination.CodigoVendedor ??
+            `VENDEDOR-TICKET-${destination.IdTicket}`,
+          Email: destination.CorreoDestino,
+          Nombre: destination.NombreVendedor ?? 'Vendedor',
+          Rol: 'VENDEDOR_EXTERNO',
+          NumeroTicket: destination.NumeroTicket,
+          Titulo: destination.Titulo,
+          NombreCliente: destination.NombreCliente,
+          Estado: destination.Estado,
+          EsVendedorExterno: true,
+        });
+      }
+      return;
+    }
     const manual = await this.database.executeProcedure<any>(
       'PACO_TICKET_DESTINO_CORREO',
       { IdTicket: String(transition.IdTicket) },
@@ -598,6 +680,34 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     if (manual[0]?.CorreoDestino && manual[0]?.Etapa) {
       await this.sendApprovalEmail(manual[0]);
       return;
+    }
+    let header: any;
+    if (
+      [
+        'PENDIENTE_PLAN',
+        'REABIERTO_URGENTE',
+        'PENDIENTE_MERCADEO',
+        'PENDIENTE_GERENCIA_GENERAL',
+        'PLAN_APROBADO',
+      ].includes(transition.Estado)
+    ) {
+      const headers = await this.database.executeProcedure<any>(
+        'PACO_GET_TICKET',
+        {
+          Option: '2',
+          Param1: String(transition.IdTicket),
+          Param2: '',
+          Param3: '',
+          Param4: '',
+          Param5: '',
+        },
+      );
+      header = headers[0];
+      const fallbackApproval = this.approvalRecipient(header);
+      if (fallbackApproval) {
+        await this.sendApprovalEmail(fallbackApproval);
+        return;
+      }
     }
     const recipients = await this.database.executeProcedure<TicketRecipient>(
       'PACO_GET_TICKET',
@@ -610,20 +720,25 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         Param5: '',
       },
     );
+    const validRecipients = recipients.filter((recipient) => recipient?.Email);
 
-    if (!recipients.length && transition.Estado === 'PENDIENTE_CIERRE') {
-      const tickets = await this.database.executeProcedure<any>(
-        'PACO_GET_TICKET',
-        {
-          Option: '2',
-          Param1: String(transition.IdTicket),
-          Param2: '',
-          Param3: '',
-          Param4: '',
-          Param5: '',
-        },
-      );
-      const ticket = tickets[0];
+    if (
+      !validRecipients.length &&
+      transition.Estado === 'PENDIENTE_CIERRE'
+    ) {
+      const ticket =
+        recipients[0]?.IdTicket
+          ? recipients[0]
+          : (
+              await this.database.executeProcedure<any>('PACO_GET_TICKET', {
+                Option: '2',
+                Param1: String(transition.IdTicket),
+                Param2: '',
+                Param3: '',
+                Param4: '',
+                Param5: '',
+              })
+            )[0];
       const fallbackEmail =
         ticket?.CorreoVendedor ||
         (Number(ticket?.EsDemo ?? 0) === 1 ? ticket?.CorreoDemo : '');
@@ -632,7 +747,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
           `El ticket ${transition.NumeroTicket} está pendiente de cierre pero no tiene correo de vendedor.`,
         );
       }
-      recipients.push({
+      validRecipients.push({
         IdTicket: ticket.IdTicket,
         UserId: ticket.CodigoVendedor || `VENDEDOR-TICKET-${ticket.IdTicket}`,
         Email: fallbackEmail,
@@ -646,9 +761,39 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       });
     }
 
-    for (const recipient of recipients) {
+    for (const recipient of validRecipients) {
       await this.sendAndLog(recipient);
     }
+  }
+
+  private approvalRecipient(ticket: any) {
+    if (!ticket?.IdTicket) return undefined;
+    const stage =
+      ticket.Estado === 'PENDIENTE_PLAN' ||
+      ticket.Estado === 'REABIERTO_URGENTE'
+        ? 'JEFE_MARCA'
+        : ticket.Estado === 'PENDIENTE_MERCADEO'
+        ? 'MERCADEO'
+        : ticket.Estado === 'PENDIENTE_GERENCIA_GENERAL'
+        ? 'GERENCIA_GENERAL'
+        : ticket.Estado === 'PLAN_APROBADO'
+        ? 'EJECUCION'
+        : undefined;
+    const email =
+      stage === 'JEFE_MARCA'
+        ? ticket.CorreoJefeMarca
+        : stage === 'MERCADEO'
+        ? ticket.CorreoGerenteMercadeo ?? ticket.CorreoMercadeo
+        : stage === 'GERENCIA_GENERAL'
+        ? ticket.CorreoGerenciaGeneral
+        : ticket.ResponsableEmail ?? ticket.CorreoJefeMarca;
+    return email
+      ? {
+          ...ticket,
+          CorreoDestino: email,
+          Etapa: stage,
+        }
+      : undefined;
   }
 
   private async sendApprovalEmail(target: any) {
@@ -670,7 +815,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         IdTicket: String(target.IdTicket),
         Etapa: target.Etapa,
         Correo: delivery.to,
-        Hash: this.hashToken(token),
+        HashHex: this.hashToken(token),
         Expira: expiration.toISOString(),
       },
     );
@@ -685,9 +830,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       target.Etapa === 'JEFE_MARCA'
         ? 'definir el plan de acción'
         : target.Etapa === 'EJECUCION'
-        ? target.Estado === 'PLAN_APROBADO'
-          ? 'iniciar la ejecución del plan'
-          : 'solicitar el cierre al vendedor'
+        ? 'iniciar la ejecución del plan'
         : 'aprobar o rechazar el plan';
     const role = this.roleLabel(target.Etapa);
     const answers = await this.flowSummary(target.IdTicket);
@@ -782,14 +925,16 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       this.config.get('TICKETS_SELLER_TOKEN_EXPIRATION_HOURS') ?? 72,
     );
     const expiration = new Date(Date.now() + hours * 60 * 60 * 1000);
-    await this.database.executeProcedure('PACO_INSERT_TICKET', {
-      Option: '5',
-      Param1: String(recipient.IdTicket),
-      Param2: this.hashToken(token),
-      Param3: expiration.toISOString(),
-      Param4: recipient.Email,
-      Param5: recipient.UserId,
-    });
+    await this.database.executeProcedure(
+      'PACO_TICKET_PRODUCTOS_EMITIR_TOKEN_VENDEDOR',
+      {
+        IdTicket: String(recipient.IdTicket),
+        HashHex: this.hashToken(token),
+        Expira: expiration.toISOString(),
+        Correo: recipient.Email,
+        Codigo: recipient.UserId,
+      },
+    );
     return token;
   }
 
@@ -969,7 +1114,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       Param4: '',
       Param5: '',
     };
-    const [headers, plans, history, answers] = await Promise.all([
+    const [headers, plans, history, answers, products] = await Promise.all([
       this.database.executeProcedure<any>('PACO_GET_TICKET', {
         Option: '2',
         ...params,
@@ -983,6 +1128,10 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         ...params,
       }),
       this.answersSummary(idTicket),
+      this.database.executeProcedure<any>('PACO_TICKET_PRODUCTOS_GET', {
+        IdTicket: String(idTicket),
+        Etapa: '',
+      }),
     ]);
     const ticket = headers[0] ?? {};
     const plan = plans[0];
@@ -1014,6 +1163,36 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
           plan.DefinidoPorNombre || plan.DefinidoPor || 'No indicado',
         )}</p></div>`
       : `<div style="border:1px dashed #aab7c2;border-radius:12px;padding:14px;margin:18px 0;color:#536471"><strong>Plan de acción:</strong> aún no ha sido definido.</div>`;
+    const productsHtml = products.length
+      ? `<div style="border:1px solid #dce4e8;border-radius:12px;padding:16px;margin:18px 0"><h3 style="margin:0 0 10px;color:#12395b">Productos y planes de acción</h3>${products
+          .map(
+            (product: any) =>
+              `<div style="padding:12px;margin:8px 0;border-left:4px solid #0b8f4d;background:#f5faf7"><strong>Producto ${
+                product.Ocurrencia
+              }: ${this.escape(product.CodigoArticulo)} · ${this.escape(
+                product.Articulo,
+              )}</strong><br><small>Estado: ${this.escape(
+                product.Estado,
+              )} · Lote: ${this.escape(
+                product.Lote || 'No indicado',
+              )} · Cantidad: ${this.escape(
+                product.Cantidad ?? 'No indicada',
+              )}</small>${
+                product.PlanAccion
+                  ? `<p><strong>${this.escape(
+                      product.TipoAccion,
+                    )}:</strong> ${this.escape(
+                      product.PlanAccion,
+                    )}<br><small>Responsable: ${this.escape(
+                      product.Responsable || 'No indicado',
+                    )} · Compromiso: ${this.escape(
+                      product.FechaCompromiso || 'No indicada',
+                    )}</small></p>`
+                  : '<p>Plan aún no definido.</p>'
+              }</div>`,
+          )
+          .join('')}</div>`
+      : planHtml;
     const historyItems = history
       .slice(0, 10)
       .map(
@@ -1034,7 +1213,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         ? `<ol style="margin:0;padding-left:22px">${historyItems}</ol>`
         : '<p>Sin movimientos registrados.</p>'
     }</div>`;
-    return header + planHtml + answers + historyHtml;
+    return header + productsHtml + answers + historyHtml;
   }
 
   private async answersSummary(idTicket: string | number) {

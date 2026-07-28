@@ -124,6 +124,11 @@ export class TicketsController {
     return this.tickets.transition(String(id), dto, request.user);
   }
 
+  @Get(':id/productos')
+  getProducts(@Param('id', ParseIntPipe) id: number) {
+    return this.tickets.getProducts(String(id));
+  }
+
   @Post(':id/reenviar-notificacion')
   resendNotification(@Param('id', ParseIntPipe) id: number) {
     return this.tickets.resendNotification(String(id));

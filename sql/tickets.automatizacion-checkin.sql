@@ -743,6 +743,9 @@ BEGIN
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Checkin_Origen X
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
+    IF OBJECT_ID(N'dbo.tbl_Ticket_Aprobacion_Token', N'U') IS NOT NULL
+        DELETE X FROM dbo.tbl_Ticket_Aprobacion_Token X
+        INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Token_Aprobacion X
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Token_Vendedor X

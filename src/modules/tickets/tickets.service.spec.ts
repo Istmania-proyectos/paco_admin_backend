@@ -141,7 +141,7 @@ describe('TicketsService automation', () => {
     expect(database.executeProcedure).toHaveBeenCalledWith(
       'PACO_TICKET_GET_APROBACION',
       {
-        Hash: createHash('sha256').update(cleanToken).digest('hex'),
+        HashHex: createHash('sha256').update(cleanToken).digest('hex'),
       },
     );
   });
