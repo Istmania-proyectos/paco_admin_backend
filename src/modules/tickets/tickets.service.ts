@@ -67,7 +67,9 @@ interface SellerResponseResult extends TicketTransitionResult {
 export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(TicketsService.name);
   private automationTimer?: NodeJS.Timeout;
+  private reminderTimer?: NodeJS.Timeout;
   private automationRunning = false;
+  private remindersRunning = false;
 
   constructor(
     private readonly database: DatabaseService,
@@ -76,27 +78,43 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   ) {}
 
   onModuleInit() {
-    if (this.config.get('TICKETS_AUTOMATION_ENABLED') !== 'true') return;
+    if (this.config.get('TICKETS_AUTOMATION_ENABLED') === 'true') {
+      const configuredMinutes = Number(
+        this.config.get('TICKETS_AUTOMATION_INTERVAL_MINUTES') ?? 60,
+      );
+      const intervalMinutes = Math.max(
+        5,
+        Number.isFinite(configuredMinutes) ? configuredMinutes : 60,
+      );
+      this.automationTimer = setInterval(
+        () => void this.runScheduledAutomation(),
+        intervalMinutes * 60_000,
+      );
+      this.automationTimer.unref();
+    }
 
-    const configuredMinutes = Number(
-      this.config.get('TICKETS_AUTOMATION_INTERVAL_MINUTES') ?? 60,
-    );
-    const intervalMinutes = Math.max(
-      5,
-      Number.isFinite(configuredMinutes) ? configuredMinutes : 60,
-    );
-    this.automationTimer = setInterval(
-      () => void this.runScheduledAutomation(),
-      intervalMinutes * 60_000,
-    );
-    this.automationTimer.unref();
-    this.logger.log(
-      `Automatización de tickets habilitada cada ${intervalMinutes} minutos.`,
-    );
+    if (this.config.get('TICKETS_REMINDERS_ENABLED') === 'true') {
+      const configuredMinutes = Number(
+        this.config.get('TICKETS_REMINDERS_CHECK_INTERVAL_MINUTES') ?? 15,
+      );
+      const intervalMinutes = Math.max(
+        5,
+        Number.isFinite(configuredMinutes) ? configuredMinutes : 15,
+      );
+      this.reminderTimer = setInterval(
+        () => void this.runScheduledReminders(),
+        intervalMinutes * 60_000,
+      );
+      this.reminderTimer.unref();
+      this.logger.log(
+        `Recordatorios de tickets habilitados; revisión cada ${intervalMinutes} minutos.`,
+      );
+    }
   }
 
   onApplicationShutdown() {
     if (this.automationTimer) clearInterval(this.automationTimer);
+    if (this.reminderTimer) clearInterval(this.reminderTimer);
   }
 
   get(query: TicketQueryDto, user: JwtPayload) {
@@ -107,6 +125,22 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       Param3: query.param3 ?? '',
       Param4: query.param4 ?? '',
       Param5: query.param5 ?? user.id,
+    });
+  }
+
+  export(
+    estado?: string,
+    buscar?: string,
+    fechaDesde?: string,
+    fechaHasta?: string,
+  ) {
+    return this.database.executeProcedure('PACO_GET_TICKET', {
+      Option: '8',
+      Param1: estado ?? '',
+      Param2: buscar?.trim() ?? '',
+      Param3: fechaDesde ?? '',
+      Param4: fechaHasta ?? '',
+      Param5: '',
     });
   }
 
@@ -367,6 +401,52 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
+  private async runScheduledReminders() {
+    if (this.remindersRunning) return;
+
+    this.remindersRunning = true;
+    try {
+      const configuredHours = Number(
+        this.config.get('TICKETS_REMINDERS_INTERVAL_HOURS') ?? 4,
+      );
+      const hours = Math.max(
+        1,
+        Number.isFinite(configuredHours) ? configuredHours : 4,
+      );
+      const targets = await this.database.executeProcedure<any>(
+        'PACO_TICKET_OBTENER_RECORDATORIOS',
+        { Horas: String(hours) },
+      );
+
+      for (const target of targets) {
+        if (target.Tipo === 'APROBACION') {
+          await this.sendApprovalEmail(target);
+          continue;
+        }
+        if (target.Tipo === 'VENDEDOR') {
+          await this.sendAndLog({
+            ...target,
+            EsVendedorExterno: true,
+            Rol: 'VENDEDOR',
+            Nombre: target.NombreVendedor ?? target.Email,
+            UserId: target.UserId ?? 'VENDEDOR_EXTERNO',
+          });
+        }
+      }
+
+      if (targets.length)
+        this.logger.log(
+          `Se enviaron ${targets.length} recordatorio(s) de ticket.`,
+        );
+    } catch (error) {
+      this.logger.error(
+        `Falló el ciclo de recordatorios: ${(error as Error).message}`,
+      );
+    } finally {
+      this.remindersRunning = false;
+    }
+  }
+
   async transition(id: string, dto: TicketActionDto, user: JwtPayload) {
     const result = await this.database.executeProcedure<TicketTransitionResult>(
       'PACO_INSERT_TICKET',
@@ -381,7 +461,12 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     );
 
     const transition = result[0];
-    if (transition) await this.notifySafely(transition);
+    if (transition) {
+      if (dto.accion === 'INICIAR_EJECUCION') {
+        await this.sendExecutionCopies(transition, dto.correosCc);
+      }
+      await this.notifySafely(transition);
+    }
     return result;
   }
 
@@ -465,8 +550,44 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       { Hash: this.hashToken(token), Json: JSON.stringify(body) },
     );
     const result = rows[0];
-    if (result) await this.notifySafely(result);
+    if (result) {
+      if (body.decision === 'INICIAR_EJECUCION') {
+        await this.sendExecutionCopies(result, body.correosCc);
+      }
+      await this.notifySafely(result);
+    }
     return { estado: result?.Estado };
+  }
+
+  private async sendExecutionCopies(
+    ticket: TicketTransitionResult,
+    recipients?: string[],
+  ) {
+    const cc = [
+      ...new Set(
+        (recipients ?? [])
+          .map((email) => email.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    if (!cc.length) return;
+
+    try {
+      await this.mailer.send({
+        to: cc[0],
+        cc: cc.slice(1),
+        subject: `Ticket ${ticket.NumeroTicket}: inicio de ejecución`,
+        html: `<p>Se inició la ejecución del ticket <strong>${this.escape(
+          ticket.NumeroTicket,
+        )}</strong>.</p>${await this.flowSummary(ticket.IdTicket)}`,
+      });
+    } catch (error) {
+      this.logger.error(
+        `No se pudieron enviar las copias del inicio de ejecución del ticket ${
+          ticket.NumeroTicket
+        }: ${(error as Error).message}`,
+      );
+    }
   }
 
   private async notifyNextRecipients(transition: TicketTransitionResult) {
@@ -533,7 +654,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private async sendApprovalEmail(target: any) {
     const delivery = await this.resolveDelivery(
       target.IdTicket,
-      target.CorreoDestino,
+      target.CorreoDestino ?? target.Email,
     );
     const token = randomBytes(32).toString('base64url');
     const expiration = new Date(
@@ -879,7 +1000,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       ticket.Descripcion || 'Sin descripción',
     )}</td></tr></table></div>`;
     const planHtml = plan
-      ? `<div style="border:2px solid #6f42c1;border-radius:12px;padding:16px;margin:18px 0;background:#faf7ff"><h3 style="margin:0 0 10px;color:#51258a">Plan de acción vigente</h3><p><strong>Tipo:</strong> ${this.escape(
+      ? `<div style="border:2px solid #6f42c1;border-radius:12px;padding:16px;margin:18px 0;background:#faf7ff"><h3 style="margin:0 0 10px;color:#51258a">Plan de acción vigente</h3><p><strong>Motivo:</strong> ${this.escape(
           plan.TipoAccion,
         )}<br><strong>Estado:</strong> ${this.escape(
           plan.Estado,

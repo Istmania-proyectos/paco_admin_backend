@@ -1,5 +1,8 @@
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
+  IsEmail,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -25,7 +28,16 @@ export class TicketActionDto {
   comentario?: string;
 
   @IsOptional()
-  @IsIn(['CAMBIO', 'DEVOLUCION', 'DESCUENTO', 'REUBICACION', 'PROMOCION', 'OTRO'])
+  @IsIn([
+    'CAMBIO',
+    'DEVOLUCION',
+    'DESCUENTO',
+    'REUBICACION',
+    'PROMOCION',
+    'DEGUSTACION',
+    'NOTA_CREDITO',
+    'OTRO',
+  ])
   tipoAccion?: string;
 
   @IsOptional()
@@ -41,4 +53,10 @@ export class TicketActionDto {
   @IsString()
   @MaxLength(450)
   responsable?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsEmail({}, { each: true })
+  correosCc?: string[];
 }

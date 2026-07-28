@@ -9,6 +9,7 @@ import * as tls from 'tls';
 
 export interface MailMessage {
   to: string;
+  cc?: string[];
   subject: string;
   html: string;
 }
@@ -73,6 +74,9 @@ export class SmtpMailerService {
       ]);
       await this.command(secure, `MAIL FROM:<${from}>`, [250]);
       await this.command(secure, `RCPT TO:<${message.to}>`, [250, 251]);
+      for (const recipient of message.cc ?? []) {
+        await this.command(secure, `RCPT TO:<${recipient}>`, [250, 251]);
+      }
       await this.command(secure, 'DATA', [354]);
       await this.command(secure, `${this.mime(from, message)}\r\n.`, [250]);
       await this.command(secure, 'QUIT', [221]);
@@ -141,6 +145,7 @@ export class SmtpMailerService {
     return [
       `From: "Paco Admin" <${from}>`,
       `To: ${message.to}`,
+      ...(message.cc?.length ? [`Cc: ${message.cc.join(', ')}`] : []),
       `Subject: =?UTF-8?B?${subject}?=`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=UTF-8',

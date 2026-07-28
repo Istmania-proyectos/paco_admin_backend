@@ -46,6 +46,16 @@ export class TicketsController {
     return this.tickets.get(query, request.user);
   }
 
+  @Get('exportar')
+  exportTickets(
+    @Query('estado') estado?: string,
+    @Query('buscar') buscar?: string,
+    @Query('fechaDesde') fechaDesde?: string,
+    @Query('fechaHasta') fechaHasta?: string,
+  ) {
+    return this.tickets.export(estado, buscar, fechaDesde, fechaHasta);
+  }
+
   @Get('checkin/respuestas')
   getCheckinResponses(@Query('formulario') formulario?: string) {
     return this.tickets.getCheckinResponses(Number(formulario ?? 14));

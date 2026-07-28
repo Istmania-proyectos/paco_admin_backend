@@ -38,10 +38,17 @@ BEGIN
         FechaCreacion DATETIME2(3) NOT NULL CONSTRAINT DF_TicketAprobacionToken_Fecha DEFAULT SYSUTCDATETIME(),
         CONSTRAINT FK_TicketAprobacionToken_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket),
         CONSTRAINT UQ_TicketAprobacionToken_Hash UNIQUE(TokenHash),
-        CONSTRAINT CK_TicketAprobacionToken_Etapa CHECK (Etapa IN ('JEFE_MARCA','MERCADEO','GERENCIA_GENERAL'))
+        CONSTRAINT CK_TicketAprobacionToken_Etapa CHECK (Etapa IN ('JEFE_MARCA','MERCADEO','GERENCIA_GENERAL','EJECUCION'))
     );
     CREATE INDEX IX_TicketAprobacionToken_Ticket ON dbo.tbl_Ticket_Aprobacion_Token(IdTicket, Etapa, FechaCreacion DESC);
 END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'dbo.tbl_Ticket_Aprobacion_Token') AND name=N'CK_TicketAprobacionToken_Etapa')
+    ALTER TABLE dbo.tbl_Ticket_Aprobacion_Token DROP CONSTRAINT CK_TicketAprobacionToken_Etapa;
+GO
+ALTER TABLE dbo.tbl_Ticket_Aprobacion_Token WITH CHECK ADD CONSTRAINT CK_TicketAprobacionToken_Etapa
+    CHECK (Etapa IN ('JEFE_MARCA','MERCADEO','GERENCIA_GENERAL','EJECUCION'));
 GO
 
 CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_GET
@@ -140,9 +147,68 @@ CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_EMITIR_TOKEN_APROBACION
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE dbo.tbl_Ticket_Aprobacion_Token SET FechaUso=SYSUTCDATETIME() WHERE IdTicket=@IdTicket AND Etapa=@Etapa AND FechaUso IS NULL;
     INSERT dbo.tbl_Ticket_Aprobacion_Token(IdTicket,Etapa,CorreoDestino,TokenHash,FechaExpiracion)
       VALUES(@IdTicket,@Etapa,@Correo,CONVERT(VARBINARY(32),@HashHex,2),@Expira);
+END
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_DESTINO_CORREO @IdTicket BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT T.IdTicket,T.NumeroTicket,T.Titulo,T.NombreCliente,T.Estado,
+      CASE WHEN T.Estado IN ('PENDIENTE_PLAN','REABIERTO_URGENTE') THEN T.CorreoJefeMarca
+           WHEN T.Estado='PENDIENTE_MERCADEO' THEN T.CorreoGerenteMercadeo
+           WHEN T.Estado='PENDIENTE_GERENCIA_GENERAL' THEN T.CorreoGerenciaGeneral
+           WHEN T.Estado='PLAN_APROBADO' THEN COALESCE(NULLIF(U.Email,''),T.CorreoJefeMarca) END CorreoDestino,
+      CASE WHEN T.Estado IN ('PENDIENTE_PLAN','REABIERTO_URGENTE') THEN 'JEFE_MARCA'
+           WHEN T.Estado='PENDIENTE_MERCADEO' THEN 'MERCADEO'
+           WHEN T.Estado='PENDIENTE_GERENCIA_GENERAL' THEN 'GERENCIA_GENERAL'
+           WHEN T.Estado='PLAN_APROBADO' THEN 'EJECUCION' END Etapa
+    FROM dbo.tbl_Ticket T LEFT JOIN dbo.AspNetUsers U ON U.Id=T.ResponsableActual
+    WHERE T.IdTicket=@IdTicket AND T.Activo=1;
+END
+GO
+
+/* Devuelve solo destinatarios que siguen pendientes y cuyo último enlace
+   válido ya tiene la antigüedad indicada. */
+CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_OBTENER_RECORDATORIOS
+    @Horas INT = 4
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Desde DATETIME2(3) = DATEADD(HOUR, -IIF(@Horas < 1, 4, @Horas), SYSUTCDATETIME());
+
+    ;WITH UltimoVendedor AS (
+        SELECT IdTicket, MAX(FechaCreacion) FechaEnvio
+        FROM dbo.tbl_Ticket_Token_Vendedor
+        WHERE FechaUso IS NULL
+        GROUP BY IdTicket
+    ), UltimaAprobacion AS (
+        SELECT IdTicket, Etapa, MAX(FechaCreacion) FechaEnvio
+        FROM dbo.tbl_Ticket_Aprobacion_Token
+        WHERE FechaUso IS NULL
+        GROUP BY IdTicket, Etapa
+    )
+    SELECT 'VENDEDOR' Tipo, T.IdTicket, T.NumeroTicket, T.Titulo, T.NombreCliente,
+           T.Estado, T.NombreVendedor, V.CorreoVendedor Email, 'VENDEDOR_EXTERNO' UserId, NULL Etapa
+    FROM UltimoVendedor U
+    JOIN dbo.tbl_Ticket T ON T.IdTicket = U.IdTicket
+    JOIN dbo.tbl_Ticket_Token_Vendedor V ON V.IdTicket = U.IdTicket AND V.FechaCreacion = U.FechaEnvio
+    WHERE T.Activo = 1 AND T.Estado = 'PENDIENTE_CIERRE' AND U.FechaEnvio <= @Desde
+
+    UNION ALL
+
+    SELECT 'APROBACION' Tipo, T.IdTicket, T.NumeroTicket, T.Titulo, T.NombreCliente,
+           T.Estado, NULL NombreVendedor, A.CorreoDestino Email, NULL UserId, A.Etapa
+    FROM UltimaAprobacion U
+    JOIN dbo.tbl_Ticket T ON T.IdTicket = U.IdTicket
+    JOIN dbo.tbl_Ticket_Aprobacion_Token A ON A.IdTicket = U.IdTicket
+      AND A.Etapa = U.Etapa AND A.FechaCreacion = U.FechaEnvio
+    WHERE U.FechaEnvio <= @Desde
+      AND ((U.Etapa = 'JEFE_MARCA' AND T.Estado IN ('PENDIENTE_PLAN', 'REABIERTO_URGENTE'))
+        OR (U.Etapa = 'MERCADEO' AND T.Estado = 'PENDIENTE_MERCADEO')
+        OR (U.Etapa = 'GERENCIA_GENERAL' AND T.Estado = 'PENDIENTE_GERENCIA_GENERAL'));
 END
 GO
 
@@ -154,9 +220,12 @@ BEGIN
     SELECT CASE WHEN X.FechaUso IS NOT NULL THEN 'USADO' WHEN X.FechaExpiracion<=SYSUTCDATETIME() THEN 'VENCIDO'
                 WHEN (X.Etapa='JEFE_MARCA' AND T.Estado NOT IN('PENDIENTE_PLAN','REABIERTO_URGENTE'))
                   OR (X.Etapa='MERCADEO' AND T.Estado<>'PENDIENTE_MERCADEO')
-                  OR (X.Etapa='GERENCIA_GENERAL' AND T.Estado<>'PENDIENTE_GERENCIA_GENERAL') THEN 'PROCESADO' ELSE 'VALIDO' END TokenEstado,
-      X.Etapa,X.CorreoDestino,T.IdTicket,T.NumeroTicket,T.Titulo,T.NombreCliente,T.Estado
+                  OR (X.Etapa='GERENCIA_GENERAL' AND T.Estado<>'PENDIENTE_GERENCIA_GENERAL')
+                  OR (X.Etapa='EJECUCION' AND T.Estado<>'PLAN_APROBADO') THEN 'PROCESADO' ELSE 'VALIDO' END TokenEstado,
+      X.Etapa,X.CorreoDestino,T.IdTicket,T.NumeroTicket,T.Titulo,T.NombreCliente,T.Estado,
+      P.TipoAccion,P.Descripcion PlanDescripcion,P.FechaCompromiso,P.Responsable,P.Estado PlanEstado
     FROM dbo.tbl_Ticket_Aprobacion_Token X JOIN dbo.tbl_Ticket T ON T.IdTicket=X.IdTicket
+    OUTER APPLY (SELECT TOP (1) PA.* FROM dbo.tbl_Ticket_Plan_Accion PA WHERE PA.IdTicket=T.IdTicket ORDER BY PA.IdPlanAccion DESC) P
     WHERE X.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
 END
 GO
@@ -184,16 +253,26 @@ BEGIN
     BEGIN
       IF @Estado<>'PENDIENTE_MERCADEO' OR @Decision NOT IN('APROBAR','RECHAZAR') RAISERROR('Decision de Mercadeo invalida.',16,1);
       IF @Decision='RECHAZAR' BEGIN SET @Nuevo='PENDIENTE_PLAN'; SET @SiguienteEtapa='JEFE_MARCA'; SELECT @SiguienteCorreo=CorreoJefeMarca FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket; END
-      ELSE IF EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Plan_Accion WHERE IdPlanAccion=(SELECT MAX(IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion WHERE IdTicket=@IdTicket) AND TipoAccion IN('CAMBIO','DEVOLUCION'))
-        BEGIN SET @Nuevo='PENDIENTE_GERENCIA_GENERAL'; SET @SiguienteEtapa='GERENCIA_GENERAL'; SELECT @SiguienteCorreo=CorreoGerenciaGeneral FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket; IF NULLIF(@SiguienteCorreo,'') IS NULL RAISERROR('El correo de Gerencia General es obligatorio para cambio/devolucion.',16,1); END
-      ELSE BEGIN SET @Nuevo='EN_EJECUCION'; END
+      ELSE IF EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Plan_Accion WHERE IdPlanAccion=(SELECT MAX(IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion WHERE IdTicket=@IdTicket) AND TipoAccion IN('CAMBIO','DEVOLUCION','NOTA_CREDITO'))
+        BEGIN SET @Nuevo='PENDIENTE_GERENCIA_GENERAL'; SET @SiguienteEtapa='GERENCIA_GENERAL'; SELECT @SiguienteCorreo=CorreoGerenciaGeneral FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket; IF NULLIF(@SiguienteCorreo,'') IS NULL RAISERROR('El correo de Gerencia General es obligatorio para cambio, devolucion o nota de credito.',16,1); END
+      ELSE BEGIN SET @Nuevo='PLAN_APROBADO'; END
     END
     ELSE IF @Etapa='GERENCIA_GENERAL'
     BEGIN
       IF @Estado<>'PENDIENTE_GERENCIA_GENERAL' OR @Decision NOT IN('APROBAR','RECHAZAR') RAISERROR('Decision de Gerencia invalida.',16,1);
-      IF @Decision='APROBAR' SET @Nuevo='EN_EJECUCION'; ELSE BEGIN SET @Nuevo='PENDIENTE_PLAN'; SET @SiguienteEtapa='JEFE_MARCA'; SELECT @SiguienteCorreo=CorreoJefeMarca FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket; END
+      IF @Decision='APROBAR' SET @Nuevo='PLAN_APROBADO'; ELSE BEGIN SET @Nuevo='PENDIENTE_PLAN'; SET @SiguienteEtapa='JEFE_MARCA'; SELECT @SiguienteCorreo=CorreoJefeMarca FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket; END
+    END
+    ELSE IF @Etapa='EJECUCION'
+    BEGIN
+      IF @Estado<>'PLAN_APROBADO' OR @Decision<>'INICIAR_EJECUCION' RAISERROR('Inicio de ejecucion invalido.',16,1);
+      SET @Nuevo='PENDIENTE_CIERRE';
+      UPDATE dbo.tbl_Ticket_Plan_Accion SET Estado='EN_EJECUCION',FechaActualizacion=SYSUTCDATETIME()
+      WHERE IdPlanAccion=(SELECT MAX(IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion WHERE IdTicket=@IdTicket);
     END
     ELSE RAISERROR('Etapa no valida.',16,1);
+    IF @Decision = 'APROBAR'
+      UPDATE dbo.tbl_Ticket_Plan_Accion SET Estado='APROBADO',FechaActualizacion=SYSUTCDATETIME()
+      WHERE IdPlanAccion=(SELECT MAX(IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion WHERE IdTicket=@IdTicket);
     UPDATE dbo.tbl_Ticket_Aprobacion_Token SET FechaUso=SYSUTCDATETIME() WHERE IdToken=@IdToken;
     UPDATE dbo.tbl_Ticket SET Estado=@Nuevo,FechaActualizacion=SYSUTCDATETIME() WHERE IdTicket=@IdTicket;
     INSERT dbo.tbl_Ticket_Historial(IdTicket,EstadoAnterior,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)

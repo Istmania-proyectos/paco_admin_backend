@@ -1,5 +1,8 @@
 import {
+  ArrayMaxSize,
+  IsArray,
   IsDateString,
+  IsEmail,
   IsIn,
   IsNotEmpty,
   IsOptional,
@@ -37,6 +40,8 @@ export class ApprovalTicketResponseDto extends ApprovalTicketTokenDto {
     'DESCUENTO',
     'REUBICACION',
     'PROMOCION',
+    'DEGUSTACION',
+    'NOTA_CREDITO',
     'OTRO',
   ])
   tipoAccion?: string;
@@ -54,6 +59,12 @@ export class ApprovalTicketResponseDto extends ApprovalTicketTokenDto {
   @IsString()
   @MaxLength(450)
   responsable?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsEmail({}, { each: true })
+  correosCc?: string[];
 
   @IsString()
   @IsNotEmpty()
