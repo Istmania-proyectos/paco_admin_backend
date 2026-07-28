@@ -21,7 +21,7 @@ npm install
 npm run start:dev
 ```
 
-Swagger queda disponible en `http://localhost:3045/swagger`.
+Swagger queda disponible en `http://localhost:5504/swagger`.
 
 Para que los JWT emitidos por ASP.NET sigan siendo válidos, configure
 `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` con los mismos valores del
@@ -50,6 +50,10 @@ este backend trabaja sobre las tablas Identity existentes.
 ## Módulo de tickets
 
 El esquema y los procedimientos del módulo están en `sql/tickets.sql`.
+
+La simulación, agrupación automática por dependencia/jefe de marca y la
+renovación mensual están documentadas en
+`docs/tickets-automatizacion-checkin.md`.
 TypeORM mantiene únicamente el mapeo (`synchronize: false`), por lo que el
 script debe revisarse y ejecutarse explícitamente en la base correspondiente.
 

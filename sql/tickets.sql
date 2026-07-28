@@ -39,6 +39,22 @@ BEGIN
 END
 GO
 
+/* Lectura de formularios CheckIn para importar tickets globales. Cada grupo
+   (formulario, respuesta) se convierte en un ticket; sus preguntas en detalle. */
+CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET_CHECKIN @Formulario INT = 14
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT RD.respuesta, RD.pregunta, P.descripcion AS pregunta_descripcion,
+           RD.valor, RD.formulario, F.descripcion AS formulario_descripcion,
+           RD.tipo_pregunta
+    FROM [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Respuesta_Detalle] RD
+    LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Preguntas] P ON P.pregunta = RD.pregunta
+    LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Formulario] F ON F.formulario = RD.formulario
+    WHERE RD.formulario = @Formulario;
+END
+GO
+
 IF COL_LENGTH('dbo.tbl_Ticket', 'CorreoVendedor') IS NULL
     ALTER TABLE dbo.tbl_Ticket ADD CorreoVendedor NVARCHAR(256) NULL;
 GO
@@ -63,7 +79,7 @@ BEGIN
         IdDetalleOrigen BIGINT NULL,
         IdPreguntaOrigen INT NULL,
         Pregunta NVARCHAR(500) NULL,
-        TipoRespuesta VARCHAR(50) NULL,
+        TipoRespuesta VARCHAR(250) NULL,
         Valor NVARCHAR(MAX) NULL,
         FechaCreacion DATETIME2(3) NOT NULL CONSTRAINT DF_TicketDetalle_Fecha DEFAULT (SYSUTCDATETIME()),
         CONSTRAINT FK_TicketDetalle_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket)
@@ -86,7 +102,7 @@ BEGIN
         FechaCreacion DATETIME2(3) NOT NULL CONSTRAINT DF_TicketPlan_Fecha DEFAULT (SYSUTCDATETIME()),
         FechaActualizacion DATETIME2(3) NULL,
         CONSTRAINT FK_TicketPlan_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket),
-        CONSTRAINT CK_TicketPlan_Tipo CHECK (TipoAccion IN ('CAMBIO','DEVOLUCION','DESCUENTO','REUBICACION','PROMOCION','OTRO')),
+        CONSTRAINT CK_TicketPlan_Tipo CHECK (TipoAccion IN ('CAMBIO','DEVOLUCION','DESCUENTO','REUBICACION','PROMOCION','DEGUSTACION','NOTA_CREDITO','OTRO')),
         CONSTRAINT CK_TicketPlan_Estado CHECK (Estado IN ('PROPUESTO','APROBADO','RECHAZADO','EN_EJECUCION','FINALIZADO'))
     );
     CREATE INDEX IX_tbl_Ticket_Plan_IdTicket ON dbo.tbl_Ticket_Plan_Accion(IdTicket, FechaCreacion DESC);
@@ -104,7 +120,7 @@ BEGIN
         Comentario NVARCHAR(MAX) NULL,
         UsuarioId NVARCHAR(450) NOT NULL,
         NombreUsuario NVARCHAR(256) NULL,
-        RolUsuario VARCHAR(100) NULL,
+        RolUsuario NVARCHAR(500) NULL,
         Fecha DATETIME2(3) NOT NULL CONSTRAINT DF_TicketHistorial_Fecha DEFAULT (SYSUTCDATETIME()),
         CONSTRAINT FK_TicketHistorial_Ticket FOREIGN KEY (IdTicket) REFERENCES dbo.tbl_Ticket(IdTicket)
     );
@@ -152,6 +168,13 @@ BEGIN
 END
 GO
 
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'dbo.tbl_Ticket_Plan_Accion') AND name = N'CK_TicketPlan_Tipo')
+    ALTER TABLE dbo.tbl_Ticket_Plan_Accion DROP CONSTRAINT CK_TicketPlan_Tipo;
+GO
+ALTER TABLE dbo.tbl_Ticket_Plan_Accion WITH CHECK ADD CONSTRAINT CK_TicketPlan_Tipo
+    CHECK (TipoAccion IN ('CAMBIO','DEVOLUCION','DESCUENTO','REUBICACION','PROMOCION','DEGUSTACION','NOTA_CREDITO','OTRO'));
+GO
+
 CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET
     @Option INT,
     @Param1 VARCHAR(MAX),
@@ -190,6 +213,37 @@ BEGIN
           )
         ORDER BY T.FechaCreacion DESC
         OFFSET (@Pagina - 1) * @Tamano ROWS FETCH NEXT @Tamano ROWS ONLY;
+        RETURN;
+    END
+
+    -- 8: exportacion sin paginacion. Param1=estado, Param2=busqueda,
+    -- Param3=fecha inicial (incluida), Param4=fecha final (incluida).
+    IF @Option = 8
+    BEGIN
+        DECLARE @FechaDesde DATE = TRY_CONVERT(DATE, NULLIF(@Param3, ''));
+        DECLARE @FechaHasta DATE = TRY_CONVERT(DATE, NULLIF(@Param4, ''));
+        IF @FechaDesde IS NOT NULL AND @FechaHasta IS NOT NULL AND @FechaDesde > @FechaHasta
+        BEGIN
+            RAISERROR('La fecha inicial no puede ser posterior a la fecha final.', 16, 1);
+            RETURN;
+        END
+
+        SELECT T.IdTicket, T.NumeroTicket, T.CodigoCliente, T.NombreCliente,
+            T.CodigoVendedor, T.NombreVendedor, T.Titulo, T.Prioridad,
+            T.Estado, T.FechaCreacion, T.FechaVencimiento,
+            P.TipoAccion Motivo, P.Descripcion PlanAccion, P.FechaCompromiso
+        FROM dbo.tbl_Ticket T
+        OUTER APPLY (SELECT TOP (1) PA.TipoAccion, PA.Descripcion, PA.FechaCompromiso
+                     FROM dbo.tbl_Ticket_Plan_Accion PA WHERE PA.IdTicket=T.IdTicket
+                     ORDER BY PA.IdPlanAccion DESC) P
+        WHERE T.Activo=1
+          AND (NULLIF(@Param1, '') IS NULL OR T.Estado=@Param1)
+          AND (@FechaDesde IS NULL OR T.FechaCreacion >= @FechaDesde)
+          AND (@FechaHasta IS NULL OR T.FechaCreacion < DATEADD(DAY, 1, @FechaHasta))
+          AND (NULLIF(@Param2, '') IS NULL OR T.NumeroTicket LIKE '%' + @Param2 + '%'
+            OR T.CodigoCliente LIKE '%' + @Param2 + '%' OR T.NombreCliente LIKE '%' + @Param2 + '%'
+            OR T.Titulo LIKE '%' + @Param2 + '%')
+        ORDER BY T.FechaCreacion DESC;
         RETURN;
     END
 
@@ -314,9 +368,17 @@ BEGIN
                 ELSE 'VALIDO'
             END TokenEstado,
             T.NumeroTicket, T.CodigoCliente, T.NombreCliente, T.Titulo,
-            T.Descripcion, T.Estado, T.FechaCreacion
+            T.Descripcion, T.Estado, T.FechaCreacion,
+            P.TipoAccion Motivo, P.Descripcion PlanAccion,
+            P.Responsable PlanResponsable, P.FechaCompromiso
         FROM dbo.tbl_Ticket_Token_Vendedor V
         INNER JOIN dbo.tbl_Ticket T ON T.IdTicket = V.IdTicket
+        OUTER APPLY (
+            SELECT TOP (1) PA.TipoAccion, PA.Descripcion, PA.Responsable, PA.FechaCompromiso
+            FROM dbo.tbl_Ticket_Plan_Accion PA
+            WHERE PA.IdTicket = T.IdTicket
+            ORDER BY PA.IdPlanAccion DESC
+        ) P
         WHERE V.TokenHash = TRY_CONVERT(VARBINARY(32), @Param1, 2);
         RETURN;
     END
@@ -419,7 +481,7 @@ BEGIN
             IdDetalleOrigen BIGINT '$.idDetalleOrigen',
             IdPreguntaOrigen INT '$.idPreguntaOrigen',
             Pregunta NVARCHAR(500) '$.pregunta',
-            TipoRespuesta VARCHAR(50) '$.tipoRespuesta',
+            TipoRespuesta VARCHAR(250) '$.tipoRespuesta',
             Valor NVARCHAR(MAX) '$.valor'
         ) D;
 
@@ -518,12 +580,12 @@ BEGIN
 
         SET @Nuevo = CASE
             WHEN @Accion = 'PROPONER_PLAN' AND @Anterior IN ('PENDIENTE_PLAN','REABIERTO_URGENTE') THEN 'PENDIENTE_MERCADEO'
-            WHEN @Accion = 'APROBAR_MERCADEO' AND @Anterior = 'PENDIENTE_MERCADEO' AND @TipoAccion IN ('CAMBIO','DEVOLUCION') THEN 'PENDIENTE_GERENCIA_GENERAL'
+            WHEN @Accion = 'APROBAR_MERCADEO' AND @Anterior = 'PENDIENTE_MERCADEO' AND @TipoAccion IN ('CAMBIO','DEVOLUCION','NOTA_CREDITO') THEN 'PENDIENTE_GERENCIA_GENERAL'
             WHEN @Accion = 'APROBAR_MERCADEO' AND @Anterior = 'PENDIENTE_MERCADEO' THEN 'PLAN_APROBADO'
             WHEN @Accion = 'RECHAZAR_MERCADEO' AND @Anterior = 'PENDIENTE_MERCADEO' THEN 'PENDIENTE_PLAN'
             WHEN @Accion = 'APROBAR_GERENCIA' AND @Anterior = 'PENDIENTE_GERENCIA_GENERAL' THEN 'PLAN_APROBADO'
             WHEN @Accion = 'RECHAZAR_GERENCIA' AND @Anterior = 'PENDIENTE_GERENCIA_GENERAL' THEN 'PENDIENTE_PLAN'
-            WHEN @Accion = 'INICIAR_EJECUCION' AND @Anterior = 'PLAN_APROBADO' THEN 'EN_EJECUCION'
+            WHEN @Accion = 'INICIAR_EJECUCION' AND @Anterior = 'PLAN_APROBADO' THEN 'PENDIENTE_CIERRE'
             WHEN @Accion = 'SOLICITAR_CIERRE' AND @Anterior = 'EN_EJECUCION' THEN 'PENDIENTE_CIERRE'
             WHEN @Accion = 'CANCELAR' AND @Anterior NOT IN ('CERRADO','CANCELADO') THEN 'CANCELADO'
         END;
@@ -627,10 +689,6 @@ BEGIN
             RAISERROR('El ticket no esta pendiente de cierre.', 16, 1);
             RETURN;
         END
-
-        UPDATE dbo.tbl_Ticket_Token_Vendedor
-        SET FechaUso = SYSUTCDATETIME()
-        WHERE IdTicket = @TokenTicket AND FechaUso IS NULL;
 
         INSERT dbo.tbl_Ticket_Token_Vendedor (
             IdTicket, TokenHash, CodigoVendedor, CorreoVendedor, FechaExpiracion

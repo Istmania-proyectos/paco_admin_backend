@@ -7,10 +7,14 @@ import { DatabaseModule } from './modules/database/database.module';
 import { PacoModule } from './modules/paco/paco.module';
 import { PunteoModule } from './modules/punteo/punteo.module';
 import { TicketsModule } from './modules/tickets/tickets.module';
+import { TicketsVencimientoModule } from './modules/tickets-vencimiento/tickets-vencimiento.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env.local', '.env'],
+    }),
     DatabaseModule,
     AuthModule,
     AccountsModule,
@@ -18,6 +22,7 @@ import { TicketsModule } from './modules/tickets/tickets.module';
     DashboardModule,
     PunteoModule,
     TicketsModule,
+    TicketsVencimientoModule,
   ],
 })
 export class AppModule {}

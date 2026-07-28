@@ -1,16 +1,23 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as net from 'net';
 import * as tls from 'tls';
 
 export interface MailMessage {
   to: string;
+  cc?: string[];
   subject: string;
   html: string;
 }
 
 @Injectable()
 export class SmtpMailerService {
+  private readonly logger = new Logger(SmtpMailerService.name);
+
   constructor(private readonly config: ConfigService) {}
 
   async send(message: MailMessage): Promise<void> {
@@ -25,6 +32,22 @@ export class SmtpMailerService {
         'Configuración SMTP incompleta: EMAIL_SMTP_HOST, EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD y EMAIL_FROM son requeridos',
       );
     }
+
+    const publicPaths = [...message.html.matchAll(/href="([^"]+)"/gi)].map(
+      (match) => {
+        try {
+          const url = new URL(match[1]);
+          return `${url.origin}${url.pathname}`;
+        } catch {
+          return '<enlace-relativo>';
+        }
+      },
+    );
+    this.logger.log(
+      `Preparando correo para ${message.to}; rutas públicas: ${
+        publicPaths.join(', ') || '<sin enlace>'
+      }`,
+    );
 
     const socket = await this.connect(host, port);
     try {
@@ -51,6 +74,9 @@ export class SmtpMailerService {
       ]);
       await this.command(secure, `MAIL FROM:<${from}>`, [250]);
       await this.command(secure, `RCPT TO:<${message.to}>`, [250, 251]);
+      for (const recipient of message.cc ?? []) {
+        await this.command(secure, `RCPT TO:<${recipient}>`, [250, 251]);
+      }
       await this.command(secure, 'DATA', [354]);
       await this.command(secure, `${this.mime(from, message)}\r\n.`, [250]);
       await this.command(secure, 'QUIT', [221]);
@@ -112,14 +138,20 @@ export class SmtpMailerService {
 
   private mime(from: string, message: MailMessage): string {
     const subject = Buffer.from(message.subject).toString('base64');
+    const encodedHtml = Buffer.from(message.html, 'utf8')
+      .toString('base64')
+      .match(/.{1,76}/g)
+      ?.join('\r\n');
     return [
       `From: "Paco Admin" <${from}>`,
       `To: ${message.to}`,
+      ...(message.cc?.length ? [`Cc: ${message.cc.join(', ')}`] : []),
       `Subject: =?UTF-8?B?${subject}?=`,
       'MIME-Version: 1.0',
       'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
       '',
-      message.html,
+      encodedHtml ?? '',
     ].join('\r\n');
   }
 }
