@@ -557,11 +557,11 @@ BEGIN
                 END
 
                 INSERT dbo.tbl_Ticket_Detalle (
-                    IdTicket, IdDetalleOrigen, IdPreguntaOrigen,
+                    IdTicket, IdDetalleOrigen, Respuesta, IdPreguntaOrigen,
                     Pregunta, TipoRespuesta, Valor
                 )
                 SELECT DISTINCT
-                    @IdTicket, B.respuesta_detalle, B.pregunta,
+                    @IdTicket, B.respuesta_detalle, B.respuesta, B.pregunta,
                     B.pregunta_descripcion, B.tipo_pregunta, B.valor
                 FROM #Base B
                 WHERE EXISTS (
@@ -906,10 +906,10 @@ BEGIN
                 WHERE IdTicket = @Nuevo;
 
                 INSERT dbo.tbl_Ticket_Detalle (
-                    IdTicket, IdDetalleOrigen, IdPreguntaOrigen,
+                    IdTicket, IdDetalleOrigen, Respuesta, IdPreguntaOrigen,
                     Pregunta, TipoRespuesta, Valor
                 )
-                SELECT @Nuevo, IdDetalleOrigen, IdPreguntaOrigen,
+                SELECT @Nuevo, IdDetalleOrigen, Respuesta, IdPreguntaOrigen,
                        Pregunta, TipoRespuesta, Valor
                 FROM dbo.tbl_Ticket_Detalle
                 WHERE IdTicket = @Anterior;

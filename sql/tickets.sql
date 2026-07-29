@@ -77,6 +77,7 @@ BEGIN
         IdTicketDetalle BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_tbl_Ticket_Detalle PRIMARY KEY,
         IdTicket BIGINT NOT NULL,
         IdDetalleOrigen BIGINT NULL,
+        Respuesta BIGINT NULL,
         IdPreguntaOrigen INT NULL,
         Pregunta NVARCHAR(500) NULL,
         TipoRespuesta VARCHAR(250) NULL,
@@ -166,6 +167,12 @@ BEGIN
     );
     CREATE INDEX IX_TicketToken_Ticket ON dbo.tbl_Ticket_Token_Vendedor(IdTicket, FechaCreacion DESC);
 END
+GO
+
+/* Conserva el identificador de respuesta de CheckIn en cada detalle para
+   trazabilidad, incluso cuando el ticket se agrupa o se renueva. */
+IF COL_LENGTH('dbo.tbl_Ticket_Detalle', 'Respuesta') IS NULL
+    ALTER TABLE dbo.tbl_Ticket_Detalle ADD Respuesta BIGINT NULL;
 GO
 
 IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'dbo.tbl_Ticket_Plan_Accion') AND name = N'CK_TicketPlan_Tipo')
@@ -474,11 +481,12 @@ BEGIN
         WHERE IdTicket = @IdTicket;
 
         INSERT dbo.tbl_Ticket_Detalle (
-            IdTicket, IdDetalleOrigen, IdPreguntaOrigen, Pregunta, TipoRespuesta, Valor
+            IdTicket, IdDetalleOrigen, Respuesta, IdPreguntaOrigen, Pregunta, TipoRespuesta, Valor
         )
-        SELECT @IdTicket, D.IdDetalleOrigen, D.IdPreguntaOrigen, D.Pregunta, D.TipoRespuesta, D.Valor
+        SELECT @IdTicket, D.IdDetalleOrigen, D.Respuesta, D.IdPreguntaOrigen, D.Pregunta, D.TipoRespuesta, D.Valor
         FROM OPENJSON(@Param1, '$.detalles') WITH (
             IdDetalleOrigen BIGINT '$.idDetalleOrigen',
+            Respuesta BIGINT '$.respuesta',
             IdPreguntaOrigen INT '$.idPreguntaOrigen',
             Pregunta NVARCHAR(500) '$.pregunta',
             TipoRespuesta VARCHAR(250) '$.tipoRespuesta',

@@ -20,11 +20,18 @@ export class ApprovalProductResponseDto {
   @Min(1)
   idTicketProducto: number;
 
-  @IsIn(['PROPONER_PLAN', 'APROBAR', 'RECHAZAR', 'INICIAR_EJECUCION'])
+  @IsIn([
+    'PROPONER_PLAN',
+    'APROBAR',
+    'RECHAZAR',
+    'RECHAZAR_CERRAR_POLITICA',
+    'INICIAR_EJECUCION',
+  ])
   decision:
     | 'PROPONER_PLAN'
     | 'APROBAR'
     | 'RECHAZAR'
+    | 'RECHAZAR_CERRAR_POLITICA'
     | 'INICIAR_EJECUCION';
 
   @IsOptional()

@@ -496,6 +496,9 @@ export class TicketDetalleEntity {
   @Column({ type: 'bigint', nullable: true })
   IdDetalleOrigen?: string;
 
+  @Column({ type: 'bigint', nullable: true })
+  Respuesta?: string;
+
   @Column({ type: 'int', nullable: true })
   IdPreguntaOrigen?: number;
 

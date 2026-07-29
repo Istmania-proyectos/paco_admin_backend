@@ -184,6 +184,59 @@ describe('TicketsService automation', () => {
     );
   });
 
+  it('informa al vendedor los productos rechazados por politica', async () => {
+    const { service, database, mailer } = setup([]);
+    database.executeProcedure
+      .mockResolvedValueOnce([
+        {
+          IdTicket: 2,
+          NumeroTicket: 'TKT-0000000002',
+          NombreCliente: 'Cliente prueba',
+          CodigoVendedor: 'T08',
+          NombreVendedor: 'Vendedor prueba',
+          CorreoVendedor: 'vendedor@test.local',
+          EsDemo: 0,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          IdTicketProducto: 40,
+          Ocurrencia: 4,
+          CodigoArticulo: 'ME015003006',
+          Articulo: 'Producto prueba',
+          Marca: 'Marca prueba',
+          Lote: 'L-01',
+          Cantidad: 12,
+          FechaVencimiento: '2026-08-01',
+          FechaMinimaPolitica: '2026-10-29',
+          Estado: 'RECHAZADO_POLITICA',
+          TipoAccion: 'REUBICACION',
+          PlanAccion: 'Plan anterior',
+        },
+      ])
+      .mockResolvedValueOnce([{ IdNotificacion: 99 }])
+      .mockResolvedValueOnce([]);
+    database.query.mockResolvedValue([{ EsDemo: 0, CorreoDemo: null }]);
+
+    await (service as any).sendPolicyRejectionNoticeSafely(
+      {
+        IdTicket: 2,
+        NumeroTicket: 'TKT-0000000002',
+        Estado: 'EN_PROCESO_PARCIAL',
+      },
+      [40],
+      'MERCADEO',
+    );
+
+    expect(mailer.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'vendedor@test.local',
+        subject: expect.stringContaining('rechazado(s) por política'),
+        html: expect.stringContaining('ME015003006'),
+      }),
+    );
+  });
+
   it('conserva el subdirectorio y hash de la ruta publica de cierre', () => {
     configValues.TICKETS_SELLER_RESPONSE_URL =
       'http://10.10.10.9:8081/paco-admin-front/#/ticket/responder';

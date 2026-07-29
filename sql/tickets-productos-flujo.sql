@@ -27,11 +27,22 @@ BEGIN
         CONSTRAINT UQ_TicketProducto_Origen UNIQUE(IdTicket, IdDetalleOrigenInicio),
         CONSTRAINT CK_TicketProducto_Estado CHECK(Estado IN(
           'PENDIENTE_PLAN','PENDIENTE_MERCADEO','PENDIENTE_GERENCIA_GENERAL',
-          'PLAN_APROBADO','PENDIENTE_CIERRE','CERRADO','REABIERTO_URGENTE','CANCELADO'
+          'PLAN_APROBADO','PENDIENTE_CIERRE','CERRADO','REABIERTO_URGENTE',
+          'RECHAZADO_POLITICA','CANCELADO'
         ))
     );
     CREATE INDEX IX_TicketProducto_TicketEstado ON dbo.tbl_Ticket_Producto(IdTicket,Estado);
 END
+GO
+
+IF EXISTS(SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID('dbo.tbl_Ticket_Producto') AND name='CK_TicketProducto_Estado')
+  ALTER TABLE dbo.tbl_Ticket_Producto DROP CONSTRAINT CK_TicketProducto_Estado;
+GO
+ALTER TABLE dbo.tbl_Ticket_Producto WITH CHECK ADD CONSTRAINT CK_TicketProducto_Estado CHECK(Estado IN(
+  'PENDIENTE_PLAN','PENDIENTE_MERCADEO','PENDIENTE_GERENCIA_GENERAL',
+  'PLAN_APROBADO','PENDIENTE_CIERRE','CERRADO','REABIERTO_URGENTE',
+  'RECHAZADO_POLITICA','CANCELADO'
+));
 GO
 
 IF EXISTS(SELECT 1 FROM sys.foreign_keys WHERE name='FK_TicketProducto_Ticket' AND delete_referential_action=0)
@@ -141,7 +152,18 @@ BEGIN
   SELECT @Total=COUNT(*),@Distintos=COUNT(DISTINCT Estado),@Unico=MAX(Estado)
   FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@IdTicket;
   IF @Total=0 RETURN;
-  SET @Nuevo=CASE WHEN @Distintos=1 THEN @Unico ELSE 'EN_PROCESO_PARCIAL' END;
+  SET @Nuevo=CASE
+    WHEN NOT EXISTS(
+      SELECT 1 FROM dbo.tbl_Ticket_Producto
+      WHERE IdTicket=@IdTicket AND Estado NOT IN('CERRADO','RECHAZADO_POLITICA','CANCELADO')
+    ) THEN CASE
+      WHEN EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@IdTicket AND Estado='CERRADO')
+        THEN 'CERRADO'
+      ELSE 'CANCELADO'
+    END
+    WHEN @Distintos=1 THEN @Unico
+    ELSE 'EN_PROCESO_PARCIAL'
+  END;
   UPDATE dbo.tbl_Ticket SET Estado=@Nuevo,
     FechaActualizacion=SYSUTCDATETIME(),
     FechaCierre=CASE WHEN @Nuevo='CERRADO' THEN SYSUTCDATETIME() ELSE NULL END
@@ -155,8 +177,18 @@ BEGIN
   SET NOCOUNT ON;
   EXEC dbo.PACO_TICKET_PRODUCTOS_SINCRONIZAR @IdTicket;
   SELECT P.*,A.IdPlanAccion,A.TipoAccion,A.Descripcion PlanAccion,
-    A.FechaCompromiso,A.Responsable,A.Estado PlanEstado
+    A.FechaCompromiso,A.Responsable,A.Estado PlanEstado,
+    CAST(CASE WHEN P.FechaVencimiento IS NOT NULL
+      AND P.FechaVencimiento<DATEADD(MONTH,3,CONVERT(DATE,COALESCE(T.FechaRespuestaOrigen,T.FechaCreacion)))
+      THEN 1 ELSE 0 END AS BIT) EsRechazablePolitica,
+    DATEADD(MONTH,3,CONVERT(DATE,COALESCE(T.FechaRespuestaOrigen,T.FechaCreacion))) FechaMinimaPolitica,
+    CAST(CASE
+      WHEN LOWER(LTRIM(RTRIM(U.UserName)))='freyes01' AND UPPER(LTRIM(RTRIM(P.Casa)))='ILG' THEN 1
+      WHEN LOWER(LTRIM(RTRIM(U.UserName)))='mmontalvan01' AND UPPER(LTRIM(RTRIM(P.Casa)))='GLOBALIZA' THEN 1
+      ELSE 0 END AS BIT) OmiteMercadeo
   FROM dbo.tbl_Ticket_Producto P
+  JOIN dbo.tbl_Ticket T ON T.IdTicket=P.IdTicket
+  LEFT JOIN dbo.AspNetUsers U ON U.Id=T.JefeMarcaUsuarioId
   OUTER APPLY(SELECT TOP(1) X.* FROM dbo.tbl_Ticket_Plan_Accion X
     WHERE X.IdTicketProducto=P.IdTicketProducto ORDER BY X.IdPlanAccion DESC) A
   WHERE P.IdTicket=@IdTicket AND (
@@ -204,13 +236,18 @@ AS
 BEGIN
   SET NOCOUNT ON; SET XACT_ABORT ON;
   BEGIN TRAN;
-  DECLARE @Token BIGINT,@Ticket BIGINT,@Etapa VARCHAR(30),@Correo NVARCHAR(256),@Uso DATETIME2(3),@Expira DATETIME2(3);
+  DECLARE @Token BIGINT,@Ticket BIGINT,@Etapa VARCHAR(30),@Correo NVARCHAR(256),@Uso DATETIME2(3),@Expira DATETIME2(3),
+    @JefeUsuario NVARCHAR(256);
   SELECT @Token=X.IdToken,@Ticket=X.IdTicket,@Etapa=X.Etapa,@Correo=X.CorreoDestino,
     @Uso=X.FechaUso,@Expira=X.FechaExpiracion
   FROM dbo.tbl_Ticket_Aprobacion_Token X WITH(UPDLOCK,HOLDLOCK)
   WHERE X.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
   IF @Token IS NULL OR @Uso IS NOT NULL OR @Expira<=SYSUTCDATETIME()
     THROW 51000,'El enlace no es valido.',1;
+  SELECT @JefeUsuario=LOWER(LTRIM(RTRIM(U.UserName)))
+  FROM dbo.tbl_Ticket T
+  LEFT JOIN dbo.AspNetUsers U ON U.Id=T.JefeMarcaUsuarioId
+  WHERE T.IdTicket=@Ticket;
 
   DECLARE @Items TABLE(
     IdProducto BIGINT,Decision VARCHAR(30),Tipo VARCHAR(50),Descripcion NVARCHAR(MAX),
@@ -225,6 +262,14 @@ BEGIN
   );
   IF NOT EXISTS(SELECT 1 FROM @Items) THROW 51000,'Debe responder al menos un producto.',1;
   IF EXISTS(
+    SELECT 1 FROM @Items I
+    JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto AND P.IdTicket=@Ticket
+    JOIN dbo.tbl_Ticket T ON T.IdTicket=P.IdTicket
+    WHERE I.Decision='RECHAZAR_CERRAR_POLITICA'
+      AND (P.FechaVencimiento IS NULL
+        OR P.FechaVencimiento>=DATEADD(MONTH,3,CONVERT(DATE,COALESCE(T.FechaRespuestaOrigen,T.FechaCreacion))))
+  ) THROW 51000,'El producto no cumple la condicion de vencimiento menor a tres meses.',1;
+  IF EXISTS(
     SELECT 1 FROM dbo.tbl_Ticket_Producto P
     WHERE P.IdTicket=@Ticket
       AND (
@@ -238,35 +283,54 @@ BEGIN
 
   IF @Etapa='JEFE_MARCA'
   BEGIN
-    IF EXISTS(SELECT 1 FROM @Items WHERE Decision<>'PROPONER_PLAN' OR NULLIF(Tipo,'') IS NULL OR NULLIF(Descripcion,'') IS NULL)
+    IF EXISTS(SELECT 1 FROM @Items WHERE Decision NOT IN('PROPONER_PLAN','RECHAZAR_CERRAR_POLITICA'))
+      THROW 51000,'Decision no valida para el Jefe de Marca.',1;
+    IF EXISTS(SELECT 1 FROM @Items WHERE Decision='PROPONER_PLAN' AND (NULLIF(Tipo,'') IS NULL OR NULLIF(Descripcion,'') IS NULL))
       THROW 51000,'Todos los productos requieren un plan valido.',1;
     INSERT dbo.tbl_Ticket_Plan_Accion(IdTicket,IdTicketProducto,TipoAccion,Descripcion,FechaCompromiso,Responsable,Estado,CreadoPor)
-    SELECT @Ticket,I.IdProducto,I.Tipo,I.Descripcion,I.Fecha,I.Responsable,'PROPUESTO',@Correo
+    SELECT @Ticket,I.IdProducto,I.Tipo,I.Descripcion,I.Fecha,I.Responsable,
+      CASE WHEN (
+        (@JefeUsuario='freyes01' AND UPPER(LTRIM(RTRIM(P.Casa)))='ILG')
+        OR (@JefeUsuario='mmontalvan01' AND UPPER(LTRIM(RTRIM(P.Casa)))='GLOBALIZA')
+      ) AND I.Tipo NOT IN('CAMBIO','DEVOLUCION','NOTA_CREDITO') THEN 'APROBADO' ELSE 'PROPUESTO' END,@Correo
     FROM @Items I JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto AND P.IdTicket=@Ticket
-    WHERE P.Estado IN('PENDIENTE_PLAN','REABIERTO_URGENTE');
-    UPDATE P SET Estado='PENDIENTE_MERCADEO',FechaActualizacion=SYSUTCDATETIME()
+    WHERE P.Estado IN('PENDIENTE_PLAN','REABIERTO_URGENTE') AND I.Decision='PROPONER_PLAN';
+    UPDATE P SET Estado=CASE
+      WHEN I.Decision='RECHAZAR_CERRAR_POLITICA' THEN 'RECHAZADO_POLITICA'
+      WHEN (
+        (@JefeUsuario='freyes01' AND UPPER(LTRIM(RTRIM(P.Casa)))='ILG')
+        OR (@JefeUsuario='mmontalvan01' AND UPPER(LTRIM(RTRIM(P.Casa)))='GLOBALIZA')
+      ) THEN CASE WHEN I.Tipo IN('CAMBIO','DEVOLUCION','NOTA_CREDITO')
+        THEN 'PENDIENTE_GERENCIA_GENERAL' ELSE 'PLAN_APROBADO' END
+      ELSE 'PENDIENTE_MERCADEO' END,FechaActualizacion=SYSUTCDATETIME()
     FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
     WHERE P.IdTicket=@Ticket AND P.Estado IN('PENDIENTE_PLAN','REABIERTO_URGENTE');
   END
   ELSE IF @Etapa='MERCADEO'
   BEGIN
-    UPDATE P SET Estado=CASE WHEN I.Decision='RECHAZAR' THEN 'PENDIENTE_PLAN'
+    IF EXISTS(SELECT 1 FROM @Items WHERE Decision NOT IN('APROBAR','RECHAZAR','RECHAZAR_CERRAR_POLITICA'))
+      THROW 51000,'Decision no valida para Mercadeo.',1;
+    UPDATE P SET Estado=CASE WHEN I.Decision='RECHAZAR_CERRAR_POLITICA' THEN 'RECHAZADO_POLITICA'
+      WHEN I.Decision='RECHAZAR' THEN 'PENDIENTE_PLAN'
       WHEN A.TipoAccion IN('CAMBIO','DEVOLUCION','NOTA_CREDITO') THEN 'PENDIENTE_GERENCIA_GENERAL'
       ELSE 'PLAN_APROBADO' END,FechaActualizacion=SYSUTCDATETIME()
     FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
     OUTER APPLY(SELECT TOP(1) X.TipoAccion FROM dbo.tbl_Ticket_Plan_Accion X WHERE X.IdTicketProducto=P.IdTicketProducto ORDER BY X.IdPlanAccion DESC) A
-    WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_MERCADEO' AND I.Decision IN('APROBAR','RECHAZAR');
-    UPDATE A SET Estado=CASE I.Decision WHEN 'RECHAZAR' THEN 'RECHAZADO'
-      WHEN 'APROBAR' THEN CASE WHEN A.TipoAccion IN('CAMBIO','DEVOLUCION','NOTA_CREDITO') THEN 'PROPUESTO' ELSE 'APROBADO' END END,
+    WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_MERCADEO' AND I.Decision IN('APROBAR','RECHAZAR','RECHAZAR_CERRAR_POLITICA');
+    UPDATE A SET Estado=CASE WHEN I.Decision IN('RECHAZAR','RECHAZAR_CERRAR_POLITICA') THEN 'RECHAZADO'
+      WHEN I.Decision='APROBAR' THEN CASE WHEN A.TipoAccion IN('CAMBIO','DEVOLUCION','NOTA_CREDITO') THEN 'PROPUESTO' ELSE 'APROBADO' END END,
       FechaActualizacion=SYSUTCDATETIME()
     FROM dbo.tbl_Ticket_Plan_Accion A JOIN @Items I ON I.IdProducto=A.IdTicketProducto
     WHERE A.IdPlanAccion=(SELECT MAX(X.IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion X WHERE X.IdTicketProducto=A.IdTicketProducto);
   END
   ELSE IF @Etapa='GERENCIA_GENERAL'
   BEGIN
-    UPDATE P SET Estado=CASE I.Decision WHEN 'APROBAR' THEN 'PLAN_APROBADO' ELSE 'PENDIENTE_PLAN' END,FechaActualizacion=SYSUTCDATETIME()
+    IF EXISTS(SELECT 1 FROM @Items WHERE Decision NOT IN('APROBAR','RECHAZAR','RECHAZAR_CERRAR_POLITICA'))
+      THROW 51000,'Decision no valida para Gerencia General.',1;
+    UPDATE P SET Estado=CASE I.Decision WHEN 'APROBAR' THEN 'PLAN_APROBADO'
+      WHEN 'RECHAZAR' THEN 'PENDIENTE_PLAN' ELSE 'RECHAZADO_POLITICA' END,FechaActualizacion=SYSUTCDATETIME()
     FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
-    WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_GERENCIA_GENERAL' AND I.Decision IN('APROBAR','RECHAZAR');
+    WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_GERENCIA_GENERAL' AND I.Decision IN('APROBAR','RECHAZAR','RECHAZAR_CERRAR_POLITICA');
     UPDATE A SET Estado=CASE I.Decision WHEN 'APROBAR' THEN 'APROBADO' ELSE 'RECHAZADO' END,
       FechaActualizacion=SYSUTCDATETIME()
     FROM dbo.tbl_Ticket_Plan_Accion A JOIN @Items I ON I.IdProducto=A.IdTicketProducto
@@ -284,12 +348,19 @@ BEGIN
   ELSE THROW 51000,'Etapa no valida.',1;
 
   INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
-  SELECT @Ticket,I.IdProducto,P.Estado,I.Decision,I.Comentario,@Correo,@Correo,@Etapa
+  SELECT @Ticket,I.IdProducto,P.Estado,
+    CASE WHEN @Etapa='JEFE_MARCA' AND I.Decision='PROPONER_PLAN'
+      AND P.Estado IN('PLAN_APROBADO','PENDIENTE_GERENCIA_GENERAL')
+      THEN 'PROPONER_PLAN_SIN_MERCADEO' ELSE I.Decision END,
+    CASE WHEN I.Decision='RECHAZAR_CERRAR_POLITICA' THEN COALESCE(NULLIF(I.Comentario,''),
+      'Producto rechazado y cerrado por reporte con menos de tres meses de anticipacion.')
+      ELSE I.Comentario END,@Correo,@Correo,@Etapa
   FROM @Items I JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto;
   UPDATE dbo.tbl_Ticket_Aprobacion_Token SET FechaUso=SYSUTCDATETIME() WHERE IdToken=@Token;
   EXEC dbo.PACO_TICKET_PRODUCTOS_RECALCULAR @Ticket;
   COMMIT;
-  SELECT IdTicket,NumeroTicket,Estado FROM dbo.tbl_Ticket WHERE IdTicket=@Ticket;
+  SELECT IdTicket,NumeroTicket,Estado,@Etapa EtapaRespuesta
+  FROM dbo.tbl_Ticket WHERE IdTicket=@Ticket;
 END
 GO
 
