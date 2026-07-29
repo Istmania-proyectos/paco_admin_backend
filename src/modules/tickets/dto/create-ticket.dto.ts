@@ -23,6 +23,11 @@ export class CreateTicketDetailDto {
   @IsOptional()
   @IsInt()
   @Min(1)
+  respuesta?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
   idPreguntaOrigen?: number;
 
   @IsOptional()

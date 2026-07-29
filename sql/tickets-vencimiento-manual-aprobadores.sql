@@ -113,9 +113,9 @@ BEGIN
       ISNULL(NULLIF(JSON_VALUE(@Json,'$.prioridad'),''),'NORMAL'),@UsuarioId,NULL);
     DECLARE @Id BIGINT=SCOPE_IDENTITY();
     UPDATE dbo.tbl_Ticket SET NumeroTicket=CONCAT('TKT-',RIGHT(REPLICATE('0',10)+CONVERT(VARCHAR(20),@Id),10)) WHERE IdTicket=@Id;
-    INSERT dbo.tbl_Ticket_Detalle(IdTicket,IdDetalleOrigen,IdPreguntaOrigen,Pregunta,TipoRespuesta,Valor)
-    SELECT @Id,D.idDetalleOrigen,D.idPreguntaOrigen,D.pregunta,D.tipoRespuesta,D.valor
-    FROM OPENJSON(@Json,'$.detalles') WITH(idDetalleOrigen BIGINT '$.idDetalleOrigen',idPreguntaOrigen INT '$.idPreguntaOrigen',pregunta NVARCHAR(500) '$.pregunta',tipoRespuesta VARCHAR(50) '$.tipoRespuesta',valor NVARCHAR(MAX) '$.valor') D;
+    INSERT dbo.tbl_Ticket_Detalle(IdTicket,IdDetalleOrigen,Respuesta,IdPreguntaOrigen,Pregunta,TipoRespuesta,Valor)
+    SELECT @Id,D.idDetalleOrigen,D.respuesta,D.idPreguntaOrigen,D.pregunta,D.tipoRespuesta,D.valor
+    FROM OPENJSON(@Json,'$.detalles') WITH(idDetalleOrigen BIGINT '$.idDetalleOrigen',respuesta BIGINT '$.respuesta',idPreguntaOrigen INT '$.idPreguntaOrigen',pregunta NVARCHAR(500) '$.pregunta',tipoRespuesta VARCHAR(50) '$.tipoRespuesta',valor NVARCHAR(MAX) '$.valor') D;
     IF NOT EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Detalle WHERE IdTicket=@Id) RAISERROR('Debe incluir respuestas de CheckIn.',16,1);
     INSERT dbo.tbl_Ticket_Historial(IdTicket,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
       VALUES(@Id,'PENDIENTE_PLAN','CREAR','Ticket creado desde formulario CheckIn.',@UsuarioId,@NombreUsuario,'VENDEDOR');

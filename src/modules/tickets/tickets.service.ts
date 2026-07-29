@@ -585,6 +585,19 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       );
       const result = rows[0];
       if (result) {
+        const policyRejections = body.productos
+          .filter(
+            (product) =>
+              product.decision === 'RECHAZAR_CERRAR_POLITICA',
+          )
+          .map((product) => product.idTicketProducto);
+        if (policyRejections.length) {
+          await this.sendPolicyRejectionNoticeSafely(
+            result,
+            policyRejections,
+            result.EtapaRespuesta,
+          );
+        }
         if (
           body.productos.some(
             (product) => product.decision === 'INICIAR_EJECUCION',
@@ -608,6 +621,127 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       await this.notifySafely(result);
     }
     return { estado: result?.Estado };
+  }
+
+  private async sendPolicyRejectionNoticeSafely(
+    transition: TicketTransitionResult,
+    productIds: number[],
+    stage?: string,
+  ) {
+    try {
+      const [headers, products] = await Promise.all([
+        this.database.executeProcedure<any>('PACO_GET_TICKET', {
+          Option: '2',
+          Param1: String(transition.IdTicket),
+          Param2: '',
+          Param3: '',
+          Param4: '',
+          Param5: '',
+        }),
+        this.database.executeProcedure<any>('PACO_TICKET_PRODUCTOS_GET', {
+          IdTicket: String(transition.IdTicket),
+          Etapa: '',
+        }),
+      ]);
+      const ticket = headers[0];
+      const rejected = products.filter(
+        (product) =>
+          productIds.some(
+            (id) => String(id) === String(product.IdTicketProducto),
+          ) && product.Estado === 'RECHAZADO_POLITICA',
+      );
+      if (!ticket || !rejected.length) return;
+
+      const intendedEmail = String(ticket.CorreoVendedor ?? '').trim();
+      if (!intendedEmail && Number(ticket.EsDemo ?? 0) !== 1) {
+        this.logger.warn(
+          `No se notificó el rechazo por política del ticket ${ticket.NumeroTicket}: no tiene correo de vendedor.`,
+        );
+        return;
+      }
+      const delivery = await this.resolveDelivery(
+        transition.IdTicket,
+        intendedEmail,
+      );
+      const logs = await this.database.executeProcedure<NotificationLog>(
+        'PACO_INSERT_TICKET',
+        {
+          Option: '3',
+          Param1: String(transition.IdTicket),
+          Param2: delivery.to,
+          Param3: 'RECHAZADO_POLITICA',
+          Param4: String(ticket.NumeroTicket),
+          Param5:
+            ticket.CodigoVendedor ??
+            `VENDEDOR-TICKET-${transition.IdTicket}`,
+        },
+      );
+      const logId = logs[0]?.IdNotificacion;
+      const cards = rejected
+        .map(
+          (product) =>
+            `<div style="padding:14px;margin:10px 0;border-left:4px solid #b42318;background:#fff5f4"><strong>Producto ${
+              product.Ocurrencia
+            }: ${this.escape(product.CodigoArticulo)} · ${this.escape(
+              product.Articulo,
+            )}</strong><br><small>Marca: ${this.escape(
+              product.Marca || 'No indicada',
+            )} · Lote: ${this.escape(
+              product.Lote || 'No indicado',
+            )} · Cantidad: ${this.escape(
+              product.Cantidad ?? 'No indicada',
+            )}</small><p><strong>Vencimiento:</strong> ${this.escape(
+              this.displayDate(product.FechaVencimiento),
+            )}<br><strong>Fecha mínima aceptable:</strong> ${this.escape(
+              this.displayDate(product.FechaMinimaPolitica),
+            )}</p>${
+              product.PlanAccion
+                ? `<p><strong>Plan que estaba en evaluación:</strong> ${this.escape(
+                    product.TipoAccion,
+                  )} — ${this.escape(product.PlanAccion)}</p>`
+                : ''
+            }</div>`,
+        )
+        .join('');
+      try {
+        await this.mailer.send({
+          to: delivery.to,
+          subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${
+            ticket.NumeroTicket
+          }: producto(s) rechazado(s) por política de vencimiento`,
+          html: `${this.demoBanner(
+            delivery,
+            'VENDEDOR',
+          )}<p>Hola ${this.escape(
+            ticket.NombreVendedor || 'Vendedor',
+          )},</p><p>Se rechazaron definitivamente ${
+            rejected.length
+          } producto(s) del ticket <strong>${this.escape(
+            ticket.NumeroTicket,
+          )}</strong>, cliente <strong>${this.escape(
+            ticket.NombreCliente,
+          )}</strong>, debido a que fueron reportados con menos de tres meses antes de su vencimiento.</p><p><strong>Decisión registrada por:</strong> ${this.escape(
+            this.roleLabel(stage),
+          )}</p>${cards}<p>Estos productos ya no continuarán en el flujo. Los demás productos del ticket, si existen, seguirán su proceso de forma independiente.</p><p>Este correo es informativo y no requiere ninguna acción.</p>`,
+        });
+        if (logId) await this.finishNotification(logId, 'ENVIADO', '');
+      } catch (error) {
+        if (logId) {
+          await this.finishNotification(
+            logId,
+            'ERROR',
+            (error as Error).message.slice(0, 2000),
+          );
+        }
+        throw error;
+      }
+    } catch (error) {
+      this.logger.error(
+        `No se pudo notificar al vendedor el rechazo por política del ticket ${
+          transition.NumeroTicket
+        }: ${(error as Error).message}`,
+      );
+    }
   }
 
   private async sendExecutionCopies(
@@ -1043,6 +1177,15 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         'El token ya fue utilizado o el ticket fue procesado.',
       );
     }
+  }
+
+  private displayDate(value: unknown) {
+    if (!value) return 'No indicada';
+    const date = value instanceof Date ? value : new Date(String(value));
+    if (Number.isNaN(date.getTime())) return String(value);
+    return `${String(date.getUTCDate()).padStart(2, '0')}/${String(
+      date.getUTCMonth() + 1,
+    ).padStart(2, '0')}/${date.getUTCFullYear()}`;
   }
 
   private escape(value: unknown) {
