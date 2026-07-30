@@ -8,6 +8,7 @@ import { PacoModule } from './modules/paco/paco.module';
 import { PunteoModule } from './modules/punteo/punteo.module';
 import { TicketsModule } from './modules/tickets/tickets.module';
 import { TicketsVencimientoModule } from './modules/tickets-vencimiento/tickets-vencimiento.module';
+import { MasterDataModule } from './modules/master-data/master-data.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { TicketsVencimientoModule } from './modules/tickets-vencimiento/tickets-
     PunteoModule,
     TicketsModule,
     TicketsVencimientoModule,
+    MasterDataModule,
   ],
 })
 export class AppModule {}

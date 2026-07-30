@@ -9,6 +9,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { IdentityService } from './identity.service';
 import { JwtStrategy } from './jwt.strategy';
+import { MasterDataGuard } from './master-data.guard';
 
 @Global()
 @Module({
@@ -38,12 +39,14 @@ import { JwtStrategy } from './jwt.strategy';
     JwtStrategy,
     ApiUserGuard,
     AdminGuard,
+    MasterDataGuard,
   ],
   exports: [
     IdentityService,
     AspNetPasswordService,
     ApiUserGuard,
     AdminGuard,
+    MasterDataGuard,
     JwtModule,
   ],
 })
