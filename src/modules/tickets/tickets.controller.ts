@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   ParseIntPipe,
   Post,
   Query,
@@ -13,6 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ApiUserGuard } from '../auth/api-user.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { TicketSettingsGuard } from '../auth/ticket-settings.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import {
@@ -23,6 +26,12 @@ import { StartTicketDemoDto } from './dto/ticket-demo.dto';
 import { TicketActionDto } from './dto/ticket-action.dto';
 import { TicketQueryDto } from './dto/ticket-query.dto';
 import { TicketsService } from './tickets.service';
+import {
+  CreateRelatedEmailDto,
+  RelatedEmailQueryDto,
+  UpdateRelatedEmailDto,
+  UpdateVacationsDto,
+} from './dto/related-email.dto';
 
 type AuthenticatedRequest = Request & { user: JwtPayload };
 
@@ -89,6 +98,51 @@ export class TicketsController {
   @Get('demo/estado')
   getDemoStatus() {
     return this.tickets.getDemoStatus();
+  }
+
+  @Get('correos-relacionados')
+  @UseGuards(TicketSettingsGuard)
+  getRelatedEmails(@Query() query: RelatedEmailQueryDto) {
+    return this.tickets.getRelatedEmails(query);
+  }
+
+  @Post('correos-relacionados')
+  @UseGuards(TicketSettingsGuard)
+  createRelatedEmail(@Body() dto: CreateRelatedEmailDto) {
+    return this.tickets.createRelatedEmail(dto);
+  }
+
+  @Patch('correos-relacionados/:id')
+  @UseGuards(TicketSettingsGuard)
+  updateRelatedEmail(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateRelatedEmailDto,
+  ) {
+    return this.tickets.updateRelatedEmail(id, dto);
+  }
+
+  @Delete('correos-relacionados/:id')
+  @UseGuards(TicketSettingsGuard)
+  deleteRelatedEmail(@Param('id', ParseIntPipe) id: number) {
+    return this.tickets.deleteRelatedEmail(id);
+  }
+
+  @Patch('usuarios/:id/vacaciones')
+  @UseGuards(TicketSettingsGuard)
+  updateVacations(
+    @Param('id') id: string,
+    @Body() dto: UpdateVacationsDto,
+  ) {
+    return this.tickets.updateUserVacations(id, dto.vacaciones);
+  }
+
+  @Patch('usuarios/correo/:correo/vacaciones')
+  @UseGuards(TicketSettingsGuard)
+  updateVacationsByEmail(
+    @Param('correo') correo: string,
+    @Body() dto: UpdateVacationsDto,
+  ) {
+    return this.tickets.updateUserVacationsByEmail(correo, dto.vacaciones);
   }
 
   @Post('demo/iniciar')

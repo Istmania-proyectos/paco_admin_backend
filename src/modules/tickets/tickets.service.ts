@@ -19,6 +19,11 @@ import { SmtpMailerService } from '../mail/smtp-mailer.service';
 import { ConfigService } from '@nestjs/config';
 import { SellerTicketResponseDto } from './dto/seller-ticket-response.dto';
 import { ApprovalTicketResponseDto } from './dto/approval-ticket-response.dto';
+import {
+  CreateRelatedEmailDto,
+  RelatedEmailQueryDto,
+  UpdateRelatedEmailDto,
+} from './dto/related-email.dto';
 
 export interface TicketTransitionResult {
   IdTicket: string | number;
@@ -157,6 +162,57 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         Number.isInteger(formulario) && formulario > 0 ? formulario : 14,
       ),
     });
+  }
+
+  getRelatedEmails(query: RelatedEmailQueryDto) {
+    return this.database.executeProcedure('PACO_CORREOS_RELACIONADOS_LISTAR', {
+      App: query.app ?? 'PACO',
+      CorreoPrincipal: query.correoprincipal ?? '',
+    });
+  }
+
+  createRelatedEmail(dto: CreateRelatedEmailDto) {
+    return this.database.executeProcedure('PACO_CORREO_RELACIONADO_GUARDAR', {
+      Id: '',
+      CorreoPrincipal: dto.correoprincipal,
+      CorreoRelacionado: dto.correorelacionado,
+      FechaInicio: dto.fechainicio ?? '',
+      FechaFinal: dto.fechafinal ?? '',
+      App: dto.app ?? 'PACO',
+      EsPrincipalSuplente: dto.esSuplentePrincipal ? '1' : '0',
+    });
+  }
+
+  updateRelatedEmail(id: number, dto: UpdateRelatedEmailDto) {
+    return this.database.executeProcedure('PACO_CORREO_RELACIONADO_GUARDAR', {
+      Id: String(id),
+      CorreoPrincipal: dto.correoprincipal,
+      CorreoRelacionado: dto.correorelacionado,
+      FechaInicio: dto.fechainicio ?? '',
+      FechaFinal: dto.fechafinal ?? '',
+      App: dto.app ?? 'PACO',
+      EsPrincipalSuplente: dto.esSuplentePrincipal ? '1' : '0',
+    });
+  }
+
+  deleteRelatedEmail(id: number) {
+    return this.database.executeProcedure('PACO_CORREO_RELACIONADO_ELIMINAR', {
+      Id: String(id),
+    });
+  }
+
+  updateUserVacations(id: string, vacations: boolean) {
+    return this.database.executeProcedure('PACO_USUARIO_VACACIONES_GUARDAR', {
+      UsuarioId: id,
+      Vacaciones: vacations ? '1' : '0',
+    });
+  }
+
+  updateUserVacationsByEmail(email: string, vacations: boolean) {
+    return this.database.executeProcedure(
+      'PACO_USUARIO_VACACIONES_GUARDAR_POR_CORREO',
+      { Correo: email, Vacaciones: vacations ? '1' : '0' },
+    );
   }
 
   getPublicLinkConfiguration() {
@@ -982,6 +1038,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async sendApprovalEmail(target: any) {
+    target = await this.resolveRelatedRecipient(target);
     const delivery = await this.resolveDelivery(
       target.IdTicket,
       target.CorreoDestino ?? target.Email,
@@ -1034,6 +1091,20 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         link,
       )}">Abrir ticket y responder</a></p><p>Este enlace es personal, de un solo uso y tiene vencimiento.</p>`,
     });
+  }
+
+  /** Reemplaza solo al Jefe de Marca durante sus vacaciones; las demÃ¡s etapas
+   * mantienen su destinatario configurado. */
+  private async resolveRelatedRecipient(target: any) {
+    if (target?.Etapa !== 'JEFE_MARCA') return target;
+    const original = String(target.CorreoDestino ?? target.Email ?? '').trim();
+    if (!original) return target;
+    const resolved = await this.database.executeProcedure<any>(
+      'PACO_CORREO_RELACIONADO_RESOLVER',
+      { CorreoPrincipal: original, App: 'PACO' },
+    );
+    const email = resolved[0]?.CorreoDestino?.trim();
+    return email ? { ...target, CorreoDestino: email } : target;
   }
 
   private async notifySafely(transition: TicketTransitionResult) {
