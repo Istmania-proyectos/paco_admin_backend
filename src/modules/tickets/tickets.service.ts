@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   GoneException,
   Injectable,
@@ -12,6 +13,7 @@ import { DatabaseService } from '../database/database.service';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { TicketActionDto } from './dto/ticket-action.dto';
+import { VendorTicketActionDto } from './dto/vendor-ticket-action.dto';
 import { TicketQueryDto } from './dto/ticket-query.dto';
 import { SmtpMailerService } from '../mail/smtp-mailer.service';
 import { ConfigService } from '@nestjs/config';
@@ -61,7 +63,13 @@ interface SellerTokenLookup {
 }
 
 interface SellerResponseResult extends TicketTransitionResult {
-  Resultado: 'OK' | 'NO_ENCONTRADO' | 'USADO' | 'VENCIDO' | 'PROCESADO';
+  Resultado:
+    | 'OK'
+    | 'NO_ENCONTRADO'
+    | 'USADO'
+    | 'VENCIDO'
+    | 'PROCESADO'
+    | 'ESTADO_INVALIDO';
 }
 
 @Injectable()
@@ -534,6 +542,49 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException('Token inexistente.');
     }
     this.assertSellerTokenStatus(response.Resultado);
+    if (response.Estado === 'REABIERTO_URGENTE') {
+      await this.notifySafely(response);
+    }
+    return {
+      NumeroTicket: response.NumeroTicket,
+      Estado: response.Estado,
+    };
+  }
+
+  async respondWithoutToken(id: string, dto: VendorTicketActionDto) {
+    if (dto.IdTicket !== undefined && String(dto.IdTicket) !== id) {
+      throw new ConflictException(
+        'El IdTicket del cuerpo no coincide con el ticket de la ruta.',
+      );
+    }
+    if (dto.accion === 'REABRIR' && !dto.respuestasNuevas?.length) {
+      throw new BadRequestException(
+        'Debe enviar al menos una respuesta nueva para reabrir el ticket.',
+      );
+    }
+    const result = await this.database.executeProcedure<SellerResponseResult>(
+      'PACO_INSERT_TICKET',
+      {
+        Option: '7',
+        Param1: id,
+        Param2: dto.accion,
+        Param3:
+          dto.accion === 'REABRIR'
+            ? JSON.stringify(dto)
+            : dto.comentario ?? '',
+        Param4: '',
+        Param5: '',
+      },
+    );
+    const response = result[0];
+    if (!response || response.Resultado === 'NO_ENCONTRADO') {
+      throw new NotFoundException('Ticket inexistente.');
+    }
+    if (response.Resultado === 'ESTADO_INVALIDO') {
+      throw new ConflictException(
+        'El estado actual del ticket no permite esta acción.',
+      );
+    }
     if (response.Estado === 'REABIERTO_URGENTE') {
       await this.notifySafely(response);
     }

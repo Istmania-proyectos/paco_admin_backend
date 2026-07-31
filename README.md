@@ -46,6 +46,7 @@ este backend trabaja sobre las tablas Identity existentes.
 | POST | `/api/Tickets/:id/transiciones` | Bearer JWT |
 | GET | `/api/Tickets/respuesta-vendedor?token=...` | Pública con token |
 | POST | `/api/Tickets/respuesta-vendedor` | Pública con token |
+| POST | `/api/Tickets/respuesta-vendedor/sin-token/:id` | Pública sin token |
 
 ## Módulo de tickets
 
@@ -80,6 +81,16 @@ El vendedor puede cerrar o reabrir el ticket sin una cuenta de plataforma. La
 validación, transición, historial y consumo del token se ejecutan en una sola
 transacción SQL. Un token inexistente responde 404, uno consumido o cuyo ticket
 ya fue procesado responde 409 y uno vencido responde 410.
+
+La integración externa también puede usar
+`POST /api/Tickets/respuesta-vendedor/sin-token/:id`. Para `REABRIR` debe enviar
+`respuestasNuevas`; cada elemento se relaciona por `IdTicketDetalle`,
+`IdDetalleOrigen` e `IdPreguntaOrigen`. El servidor solo admite preguntas
+editables (actualmente la pregunta 49), crea una fotografía previa en
+`dbo.tbl_Ticket_Reapertura` y después actualiza los valores y reabre el ticket
+en una sola transacción. `respuestasAnteriores` puede viajar en el JSON para
+compatibilidad con la aplicación, pero el respaldo oficial siempre se obtiene
+directamente de la base de datos.
 
 Por ejemplo, si Angular usa la ruta `/home/tickets/:id`:
 

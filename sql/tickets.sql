@@ -175,6 +175,33 @@ IF COL_LENGTH('dbo.tbl_Ticket_Detalle', 'Respuesta') IS NULL
     ALTER TABLE dbo.tbl_Ticket_Detalle ADD Respuesta BIGINT NULL;
 GO
 
+/* Auditoria inmutable de los datos modificados al reabrir un ticket. */
+IF OBJECT_ID(N'dbo.tbl_Ticket_Reapertura', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.tbl_Ticket_Reapertura (
+        IdTicketReapertura BIGINT IDENTITY(1,1) NOT NULL
+            CONSTRAINT PK_tbl_Ticket_Reapertura PRIMARY KEY,
+        IdTicket BIGINT NOT NULL,
+        EstadoAnterior VARCHAR(30) NOT NULL,
+        RespuestasAnteriores NVARCHAR(MAX) NOT NULL,
+        RespuestasNuevas NVARCHAR(MAX) NOT NULL,
+        Comentario NVARCHAR(2000) NULL,
+        Origen VARCHAR(50) NOT NULL
+            CONSTRAINT DF_TicketReapertura_Origen DEFAULT ('APLICACION_EXTERNA'),
+        FechaCreacion DATETIME2(3) NOT NULL
+            CONSTRAINT DF_TicketReapertura_Fecha DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT FK_TicketReapertura_Ticket FOREIGN KEY (IdTicket)
+            REFERENCES dbo.tbl_Ticket(IdTicket),
+        CONSTRAINT CK_TicketReapertura_AnterioresJson
+            CHECK (ISJSON(RespuestasAnteriores) = 1),
+        CONSTRAINT CK_TicketReapertura_NuevasJson
+            CHECK (ISJSON(RespuestasNuevas) = 1)
+    );
+    CREATE INDEX IX_TicketReapertura_Ticket
+        ON dbo.tbl_Ticket_Reapertura(IdTicket, FechaCreacion DESC);
+END
+GO
+
 IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'dbo.tbl_Ticket_Plan_Accion') AND name = N'CK_TicketPlan_Tipo')
     ALTER TABLE dbo.tbl_Ticket_Plan_Accion DROP CONSTRAINT CK_TicketPlan_Tipo;
 GO
@@ -799,6 +826,195 @@ BEGIN
         SELECT
             'OK' Resultado, T.IdTicket, T.NumeroTicket, T.Estado, T.FechaActualizacion
         FROM dbo.tbl_Ticket T WHERE T.IdTicket = @SellerTicketId;
+        RETURN;
+    END
+
+    -- 7: respuesta publica por IdTicket, sin token.
+    -- Param1=IdTicket, Param2=CERRAR|REABRIR, Param3=comentario.
+    IF @Option = 7
+    BEGIN
+        DECLARE @PublicTicketId BIGINT = TRY_CONVERT(BIGINT, @Param1);
+        DECLARE @PublicCurrentState VARCHAR(30);
+        DECLARE @PublicNewState VARCHAR(30);
+        DECLARE @PublicComment NVARCHAR(2000) = @Param3;
+        DECLARE @PreviousAnswers NVARCHAR(MAX);
+        DECLARE @NewAnswers NVARCHAR(MAX) = N'[]';
+
+        IF @Param2 NOT IN ('CERRAR','REABRIR')
+        BEGIN
+            RAISERROR('Accion de vendedor no valida.', 16, 1);
+            RETURN;
+        END
+
+        BEGIN TRAN;
+        SELECT @PublicCurrentState = Estado
+        FROM dbo.tbl_Ticket WITH (UPDLOCK, HOLDLOCK)
+        WHERE IdTicket = @PublicTicketId AND Activo = 1;
+
+        IF @PublicCurrentState IS NULL
+        BEGIN
+            ROLLBACK TRAN;
+            SELECT 'NO_ENCONTRADO' Resultado;
+            RETURN;
+        END
+
+        IF (@Param2 = 'CERRAR' AND @PublicCurrentState <> 'PENDIENTE_CIERRE')
+           OR (@Param2 = 'REABRIR' AND @PublicCurrentState NOT IN ('PENDIENTE_CIERRE','CERRADO'))
+        BEGIN
+            ROLLBACK TRAN;
+            SELECT 'ESTADO_INVALIDO' Resultado;
+            RETURN;
+        END
+
+        SET @PublicNewState =
+            CASE WHEN @Param2 = 'CERRAR' THEN 'CERRADO' ELSE 'REABIERTO_URGENTE' END;
+
+        IF @Param2 = 'REABRIR'
+        BEGIN
+            IF ISJSON(@Param3) <> 1
+            BEGIN
+                ROLLBACK TRAN;
+                RAISERROR('El contenido de reapertura debe ser JSON valido.', 16, 1);
+                RETURN;
+            END
+
+            SET @PublicComment = JSON_VALUE(@Param3, '$.comentario');
+            SET @NewAnswers =
+                ISNULL(JSON_QUERY(@Param3, '$.respuestasNuevas'), N'[]');
+
+            IF EXISTS (
+                SELECT 1
+                FROM OPENJSON(@NewAnswers) WITH (
+                    IdTicketDetalle BIGINT '$.IdTicketDetalle',
+                    IdDetalleOrigen BIGINT '$.IdDetalleOrigen',
+                    IdPreguntaOrigen INT '$.IdPreguntaOrigen',
+                    Valor NVARCHAR(4000) '$.Valor'
+                ) N
+                LEFT JOIN dbo.tbl_Ticket_Detalle D
+                  ON D.IdTicketDetalle = N.IdTicketDetalle
+                 AND D.IdTicket = @PublicTicketId
+                 AND D.IdDetalleOrigen = N.IdDetalleOrigen
+                 AND D.IdPreguntaOrigen = N.IdPreguntaOrigen
+                WHERE D.IdTicketDetalle IS NULL
+                   OR N.Valor IS NULL
+                   OR N.IdPreguntaOrigen <> 49
+            )
+            BEGIN
+                ROLLBACK TRAN;
+                RAISERROR('Las respuestas nuevas contienen detalles inexistentes o no editables.', 16, 1);
+                RETURN;
+            END
+
+            IF EXISTS (
+                SELECT IdTicketDetalle
+                FROM OPENJSON(@NewAnswers) WITH (
+                    IdTicketDetalle BIGINT '$.IdTicketDetalle'
+                )
+                GROUP BY IdTicketDetalle
+                HAVING COUNT(*) > 1
+            )
+            BEGIN
+                ROLLBACK TRAN;
+                RAISERROR('No se permite repetir IdTicketDetalle.', 16, 1);
+                RETURN;
+            END
+
+            SELECT @PreviousAnswers = (
+                SELECT D.IdTicketDetalle, D.IdTicket, D.IdDetalleOrigen,
+                       D.IdPreguntaOrigen, D.Pregunta, D.TipoRespuesta, D.Valor,
+                       D.FechaCreacion,
+                       CASE WHEN D.IdPreguntaOrigen = 49 THEN 'SI' ELSE 'NO' END Editable
+                FROM dbo.tbl_Ticket_Detalle D
+                WHERE D.IdTicket = @PublicTicketId
+                ORDER BY D.IdTicketDetalle
+                FOR JSON PATH
+            );
+
+            INSERT dbo.tbl_Ticket_Reapertura (
+                IdTicket, EstadoAnterior, RespuestasAnteriores,
+                RespuestasNuevas, Comentario
+            ) VALUES (
+                @PublicTicketId, @PublicCurrentState,
+                ISNULL(@PreviousAnswers, N'[]'), @NewAnswers, @PublicComment
+            );
+
+            UPDATE D
+            SET D.Valor = N.Valor
+            FROM dbo.tbl_Ticket_Detalle D
+            INNER JOIN OPENJSON(@NewAnswers) WITH (
+                IdTicketDetalle BIGINT '$.IdTicketDetalle',
+                Valor NVARCHAR(4000) '$.Valor'
+            ) N ON N.IdTicketDetalle = D.IdTicketDetalle
+            WHERE D.IdTicket = @PublicTicketId
+              AND D.IdPreguntaOrigen = 49;
+
+            /* Mantiene sincronizada la cantidad materializada por producto.
+               IdTicketDetalle evita confundir preguntas 49 repetidas. */
+            IF OBJECT_ID(N'dbo.tbl_Ticket_Producto', N'U') IS NOT NULL
+                EXEC sys.sp_executesql N'
+                    UPDATE P
+                    SET P.Cantidad = TRY_CONVERT(
+                            DECIMAL(18,3), REPLACE(N.Valor, '','', ''.'')
+                        ),
+                        P.FechaActualizacion = SYSUTCDATETIME()
+                    FROM dbo.tbl_Ticket_Producto P
+                    INNER JOIN (
+                        SELECT D.IdDetalleOrigen, J.Valor
+                        FROM dbo.tbl_Ticket_Detalle D
+                        INNER JOIN OPENJSON(@Json) WITH (
+                            IdTicketDetalle BIGINT ''$.IdTicketDetalle'',
+                            Valor NVARCHAR(4000) ''$.Valor''
+                        ) J ON J.IdTicketDetalle = D.IdTicketDetalle
+                        WHERE D.IdTicket = @Ticket
+                          AND D.IdPreguntaOrigen = 49
+                    ) N ON N.IdDetalleOrigen > P.IdDetalleOrigenInicio
+                       AND NOT EXISTS (
+                           SELECT 1 FROM dbo.tbl_Ticket_Producto P2
+                           WHERE P2.IdTicket = P.IdTicket
+                             AND P2.IdDetalleOrigenInicio > P.IdDetalleOrigenInicio
+                             AND P2.IdDetalleOrigenInicio < N.IdDetalleOrigen
+                       )
+                    WHERE P.IdTicket = @Ticket;',
+                    N'@Json NVARCHAR(MAX), @Ticket BIGINT',
+                    @Json = @NewAnswers, @Ticket = @PublicTicketId;
+        END
+
+        UPDATE dbo.tbl_Ticket
+        SET Estado = @PublicNewState,
+            Prioridad = CASE WHEN @PublicNewState = 'REABIERTO_URGENTE' THEN 'URGENTE' ELSE Prioridad END,
+            FechaActualizacion = SYSUTCDATETIME(),
+            FechaCierre = CASE WHEN @PublicNewState = 'CERRADO' THEN SYSUTCDATETIME() ELSE NULL END,
+            ResponsableActual = CASE WHEN @PublicNewState = 'REABIERTO_URGENTE' THEN NULL ELSE ResponsableActual END
+        WHERE IdTicket = @PublicTicketId;
+
+        IF @PublicNewState = 'CERRADO'
+            UPDATE dbo.tbl_Ticket_Plan_Accion
+            SET Estado = 'FINALIZADO', FechaActualizacion = SYSUTCDATETIME()
+            WHERE IdPlanAccion = (
+                SELECT MAX(IdPlanAccion)
+                FROM dbo.tbl_Ticket_Plan_Accion
+                WHERE IdTicket = @PublicTicketId
+            );
+
+        UPDATE dbo.tbl_Ticket_Token_Vendedor
+        SET FechaUso = SYSUTCDATETIME()
+        WHERE IdTicket = @PublicTicketId AND FechaUso IS NULL;
+
+        INSERT dbo.tbl_Ticket_Historial (
+            IdTicket, EstadoAnterior, EstadoNuevo, Accion, Comentario,
+            UsuarioId, NombreUsuario, RolUsuario
+        ) VALUES (
+            @PublicTicketId, @PublicCurrentState, @PublicNewState, @Param2,
+            @PublicComment, 'APLICACION_EXTERNA', 'Aplicacion externa',
+            'APLICACION_EXTERNA'
+        );
+
+        COMMIT TRAN;
+        SELECT
+            'OK' Resultado, T.IdTicket, T.NumeroTicket, T.Estado,
+            T.FechaActualizacion
+        FROM dbo.tbl_Ticket T
+        WHERE T.IdTicket = @PublicTicketId;
         RETURN;
     END
 
