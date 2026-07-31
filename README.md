@@ -21,7 +21,27 @@ npm install
 npm run start:dev
 ```
 
-Swagger queda disponible en `http://localhost:5504/swagger`.
+Swagger queda disponible en `http://localhost:55003/swagger`.
+
+## Publicar Angular desde NestJS
+
+Compile Angular y copie el contenido generado, incluido `index.html`, dentro
+de `public/`. También puede indicar otra carpeta mediante
+`FRONTEND_DIST_PATH`. NestJS sirve el frontend en `/`, conserva `/api` para los
+controladores y devuelve `index.html` para rutas del cliente como `/login`.
+
+```env
+PORT=55003
+HOST=0.0.0.0
+FRONTEND_DIST_PATH=public
+```
+
+La estructura final debe incluir:
+
+```text
+public/index.html
+public/assets/
+```
 
 Para que los JWT emitidos por ASP.NET sigan siendo válidos, configure
 `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` con los mismos valores del

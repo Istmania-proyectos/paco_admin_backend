@@ -2,7 +2,9 @@ import { Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { existsSync } from 'fs';
 import { networkInterfaces } from 'os';
+import { join, resolve } from 'path';
 import { AppModule } from './app.module';
 
 function getNetworkUrls(port: number): string[] {
@@ -50,7 +52,35 @@ async function bootstrap() {
     SwaggerModule.createDocument(app, swaggerConfig),
   );
 
-  const port = Number(process.env.PORT ?? 5504);
+  const frontendPath = resolve(
+    process.env.FRONTEND_DIST_PATH ?? join(process.cwd(), 'public'),
+  );
+  const frontendIndex = join(frontendPath, 'index.html');
+  if (existsSync(frontendIndex)) {
+    app.useStaticAssets(frontendPath, { index: false });
+    app.use((request, response, next) => {
+      const requestPath = request.path.toLowerCase();
+      if (request.method === 'GET' && requestPath === '/') {
+        return response.redirect('/login');
+      }
+      if (
+        request.method === 'GET' &&
+        request.accepts('html') &&
+        !requestPath.startsWith('/api') &&
+        !requestPath.startsWith('/swagger')
+      ) {
+        return response.sendFile(frontendIndex);
+      }
+      return next();
+    });
+    logger.log(`Frontend Angular habilitado desde ${frontendPath}`);
+  } else {
+    logger.warn(
+      `Frontend Angular no encontrado en ${frontendPath}; se iniciará solamente la API.`,
+    );
+  }
+
+  const port = Number(process.env.PORT ?? 55003);
   const host = process.env.HOST ?? '0.0.0.0';
 
   await app.listen(port, host);
