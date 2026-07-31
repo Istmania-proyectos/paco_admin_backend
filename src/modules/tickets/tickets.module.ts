@@ -4,10 +4,11 @@ import { TicketsService } from './tickets.service';
 import { MailModule } from '../mail/mail.module';
 import { SellerTicketResponseController } from './seller-ticket-response.controller';
 import { ApprovalTicketResponseController } from './approval-ticket-response.controller';
+import { TicketSettingsGuard } from '../auth/ticket-settings.guard';
 
 @Module({
   imports: [MailModule],
   controllers: [TicketsController, SellerTicketResponseController, ApprovalTicketResponseController],
-  providers: [TicketsService],
+  providers: [TicketsService, TicketSettingsGuard],
 })
 export class TicketsModule {}

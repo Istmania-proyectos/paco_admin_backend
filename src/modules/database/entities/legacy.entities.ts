@@ -137,6 +137,9 @@ export class AspNetUserEntity {
 
   @Column({ type: 'nvarchar', length: 50, nullable: true })
   Cliente?: string;
+
+  @Column({ type: 'bit', default: false })
+  vacaciones?: boolean;
 }
 
 @Entity({ name: 'AspNetUserTokens', schema: 'dbo', synchronize: false })
@@ -231,6 +234,12 @@ export class CorreoRelacionadoEntity {
 
   @Column({ type: 'datetime', nullable: true })
   fechafinal?: Date;
+
+  @Column({ type: 'nvarchar', length: 50, nullable: true })
+  app?: string;
+
+  @Column({ type: 'bit', default: false })
+  EsSuplentePrincipal?: boolean;
 }
 
 @Entity({ name: 'tbl_Pedido_Usuario', schema: 'dbo', synchronize: false })
