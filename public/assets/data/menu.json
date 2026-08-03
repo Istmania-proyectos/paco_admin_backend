@@ -1,0 +1,17 @@
+[
+    {
+        "nombre": "Dashboard",
+        "redirect": "/home/inicio",
+        "icono": "format_list_bulleted"
+    },
+    {
+        "nombre": "Solicitudes Pendientes",
+        "redirect": "/home/solicitudes",
+        "icono": "assignment"
+    },
+    {
+        "nombre": "Solicitudes Aprobadas",
+        "redirect": "/home/solicitudes_aprobadas",
+        "icono": "format_list_bulleted"
+    }
+]

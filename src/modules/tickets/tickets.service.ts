@@ -105,6 +105,17 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         intervalMinutes * 60_000,
       );
       this.automationTimer.unref();
+      this.logger.log(
+        `Automatización CheckIn habilitada; ejecución cada ${intervalMinutes} minutos en modo ${
+          this.config.get('TICKETS_AUTOMATION_DRY_RUN') === 'false'
+            ? 'REAL'
+            : 'SIMULACIÓN'
+        }.`,
+      );
+    } else {
+      this.logger.warn(
+        'Automatización CheckIn deshabilitada (TICKETS_AUTOMATION_ENABLED no es true).',
+      );
     }
 
     if (this.config.get('TICKETS_REMINDERS_ENABLED') === 'true') {
@@ -268,23 +279,42 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     filters?: { respuesta?: number; dependencia?: string },
     executionOptions?: { limitTickets?: number; demoEmail?: string },
   ) {
+    const startedAt = Date.now();
     const demoEmail = executionOptions?.demoEmail?.trim() ?? '';
-    const rows = await this.database.executeProcedure<any>(
-      'PACO_TICKET_AUTOMATIZAR_CHECKIN',
-      {
-        Formulario: String(formulario),
-        Ejecutar: execute ? '1' : '0',
-        CorreoMercadeo:
-          this.config.get<string>('TICKETS_MARKETING_MANAGER_EMAIL') || '',
-        CorreoGerencia:
-          this.config.get<string>('TICKETS_GENERAL_MANAGER_EMAIL') || '',
-        UsuarioSistema:
-          this.config.get<string>('TICKETS_AUTOMATION_USER_ID') ??
-          'AUTOMATIZACION_CHECKIN',
-        LimiteTickets: String(executionOptions?.limitTickets ?? 0),
-        CorreoDemo: demoEmail,
-      },
+    const mode = demoEmail ? 'DEMO' : execute ? 'EJECUCIÓN' : 'SIMULACIÓN';
+    this.logger.log(
+      `Iniciando automatización CheckIn: formulario=${formulario}, modo=${mode}, límite=${
+        executionOptions?.limitTickets ?? 0
+      }.`,
     );
+
+    let rows: any[];
+    try {
+      rows = await this.database.executeProcedure<any>(
+        'PACO_TICKET_AUTOMATIZAR_CHECKIN',
+        {
+          Formulario: String(formulario),
+          Ejecutar: execute ? '1' : '0',
+          CorreoMercadeo:
+            this.config.get<string>('TICKETS_MARKETING_MANAGER_EMAIL') || '',
+          CorreoGerencia:
+            this.config.get<string>('TICKETS_GENERAL_MANAGER_EMAIL') || '',
+          UsuarioSistema:
+            this.config.get<string>('TICKETS_AUTOMATION_USER_ID') ??
+            'AUTOMATIZACION_CHECKIN',
+          LimiteTickets: String(executionOptions?.limitTickets ?? 0),
+          CorreoDemo: demoEmail,
+        },
+      );
+    } catch (error) {
+      this.logger.error(
+        `Falló PACO_TICKET_AUTOMATIZAR_CHECKIN para formulario=${formulario}, modo=${mode}, duración=${
+          Date.now() - startedAt
+        }ms: ${(error as Error).message}`,
+        (error as Error).stack,
+      );
+      throw error;
+    }
     const filteredRows = rows.filter((row) => {
       const dependencyMatches =
         !filters?.dependencia ||
@@ -312,6 +342,22 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         }
       }
     }
+
+    const resultCounts = filteredRows.reduce<Record<string, number>>(
+      (counts, row) => {
+        const status = String(row.EstadoResultado ?? 'SIN_ESTADO');
+        counts[status] = (counts[status] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+    this.logger.log(
+      `Finalizó automatización CheckIn: formulario=${formulario}, modo=${mode}, grupos=${
+        filteredRows.length
+      }, resultados=${JSON.stringify(resultCounts)}, duración=${
+        Date.now() - startedAt
+      }ms.`,
+    );
 
     return {
       modo: execute ? 'EJECUCION' : 'SIMULACION',
@@ -398,7 +444,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private assertDemoAccess(code: string, user: JwtPayload) {
     const demoEmail =
       this.config.get<string>('TICKETS_DEMO_EMAIL') ??
-      'yovanni.amador@istmania.hn';
+      'oscar.vasquez@istmania.hn';
     if (code.trim().toUpperCase() !== 'TEST') {
       throw new ConflictException(
         'Escriba TEST para confirmar esta operación.',
@@ -566,14 +612,13 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
 
   async respondAsSeller(dto: SellerTicketResponseDto) {
     if (dto.productos?.length) {
-      const result =
-        await this.database.executeProcedure<SellerResponseResult>(
-          'PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR',
-          {
-            HashHex: this.hashToken(dto.token),
-            Json: JSON.stringify({ productos: dto.productos }),
-          },
-        );
+      const result = await this.database.executeProcedure<SellerResponseResult>(
+        'PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR',
+        {
+          HashHex: this.hashToken(dto.token),
+          Json: JSON.stringify({ productos: dto.productos }),
+        },
+      );
       const response = result[0];
       if (!response) throw new NotFoundException('Token inexistente.');
       await this.notifySafely(response);
@@ -625,9 +670,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         Param1: id,
         Param2: dto.accion,
         Param3:
-          dto.accion === 'REABRIR'
-            ? JSON.stringify(dto)
-            : dto.comentario ?? '',
+          dto.accion === 'REABRIR' ? JSON.stringify(dto) : dto.comentario ?? '',
         Param4: '',
         Param5: '',
       },
@@ -693,10 +736,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       const result = rows[0];
       if (result) {
         const policyRejections = body.productos
-          .filter(
-            (product) =>
-              product.decision === 'RECHAZAR_CERRAR_POLITICA',
-          )
+          .filter((product) => product.decision === 'RECHAZAR_CERRAR_POLITICA')
           .map((product) => product.idTicketProducto);
         if (policyRejections.length) {
           await this.sendPolicyRejectionNoticeSafely(
@@ -779,8 +819,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
           Param3: 'RECHAZADO_POLITICA',
           Param4: String(ticket.NumeroTicket),
           Param5:
-            ticket.CodigoVendedor ??
-            `VENDEDOR-TICKET-${transition.IdTicket}`,
+            ticket.CodigoVendedor ?? `VENDEDOR-TICKET-${transition.IdTicket}`,
         },
       );
       const logId = logs[0]?.IdNotificacion;
@@ -816,10 +855,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
           subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${
             ticket.NumeroTicket
           }: producto(s) rechazado(s) por política de vencimiento`,
-          html: `${this.demoBanner(
-            delivery,
-            'VENDEDOR',
-          )}<p>Hola ${this.escape(
+          html: `${this.demoBanner(delivery, 'VENDEDOR')}<p>Hola ${this.escape(
             ticket.NombreVendedor || 'Vendedor',
           )},</p><p>Se rechazaron definitivamente ${
             rejected.length
@@ -883,11 +919,10 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   private async notifyNextRecipients(transition: TicketTransitionResult) {
-    const productDestinations =
-      await this.database.executeProcedure<any>(
-        'PACO_TICKET_PRODUCTOS_DESTINOS',
-        { IdTicket: String(transition.IdTicket) },
-      );
+    const productDestinations = await this.database.executeProcedure<any>(
+      'PACO_TICKET_PRODUCTOS_DESTINOS',
+      { IdTicket: String(transition.IdTicket) },
+    );
     const validProductDestinations = productDestinations.filter(
       (destination) => destination?.Etapa && destination?.CorreoDestino,
     );
@@ -963,23 +998,19 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     );
     const validRecipients = recipients.filter((recipient) => recipient?.Email);
 
-    if (
-      !validRecipients.length &&
-      transition.Estado === 'PENDIENTE_CIERRE'
-    ) {
-      const ticket =
-        recipients[0]?.IdTicket
-          ? recipients[0]
-          : (
-              await this.database.executeProcedure<any>('PACO_GET_TICKET', {
-                Option: '2',
-                Param1: String(transition.IdTicket),
-                Param2: '',
-                Param3: '',
-                Param4: '',
-                Param5: '',
-              })
-            )[0];
+    if (!validRecipients.length && transition.Estado === 'PENDIENTE_CIERRE') {
+      const ticket = recipients[0]?.IdTicket
+        ? recipients[0]
+        : (
+            await this.database.executeProcedure<any>('PACO_GET_TICKET', {
+              Option: '2',
+              Param1: String(transition.IdTicket),
+              Param2: '',
+              Param3: '',
+              Param4: '',
+              Param5: '',
+            })
+          )[0];
       const fallbackEmail =
         ticket?.CorreoVendedor ||
         (Number(ticket?.EsDemo ?? 0) === 1 ? ticket?.CorreoDemo : '');
@@ -1043,54 +1074,91 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       target.IdTicket,
       target.CorreoDestino ?? target.Email,
     );
-    const token = randomBytes(32).toString('base64url');
-    const expiration = new Date(
-      Date.now() +
-        Number(
-          this.config.get('TICKETS_APPROVAL_TOKEN_EXPIRATION_HOURS') ?? 120,
-        ) *
-          3600000,
-    );
-    await this.database.executeProcedure(
-      'PACO_TICKET_EMITIR_TOKEN_APROBACION',
+    const logs = await this.database.executeProcedure<NotificationLog>(
+      'PACO_INSERT_TICKET',
       {
-        IdTicket: String(target.IdTicket),
-        Etapa: target.Etapa,
-        Correo: delivery.to,
-        HashHex: this.hashToken(token),
-        Expira: expiration.toISOString(),
+        Option: '3',
+        Param1: String(target.IdTicket),
+        Param2: delivery.to,
+        Param3: String(target.Estado ?? target.Etapa ?? ''),
+        Param4: String(target.NumeroTicket ?? ''),
+        Param5: String(
+          target.UserId ??
+            target.JefeMarcaUsuarioId ??
+            target.CodigoVendedor ??
+            target.Etapa ??
+            '',
+        ),
       },
     );
-    const base = this.publicTicketResponseUrl(
-      'ticket/aprobar',
-      'TICKETS_APPROVAL_RESPONSE_URL',
-    );
-    const link = `${base}${
-      base.includes('?') ? '&' : '?'
-    }token=${encodeURIComponent(token)}`;
-    const action =
-      target.Etapa === 'JEFE_MARCA'
-        ? 'definir el plan de acción'
-        : target.Etapa === 'EJECUCION'
-        ? 'iniciar la ejecución del plan'
-        : 'aprobar o rechazar el plan';
-    const role = this.roleLabel(target.Etapa);
-    const answers = await this.flowSummary(target.IdTicket);
-    await this.mailer.send({
-      to: delivery.to,
-      subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${
-        target.NumeroTicket
-      }: acción requerida - ${role}`,
-      html: `${this.demoBanner(delivery, role)}<p>Hola ${this.escape(
-        role,
-      )},</p><p>Su rol en este ticket es: <strong>${this.escape(
-        role,
-      )}</strong>.</p><p>El ticket <strong>${this.escape(
-        target.NumeroTicket,
-      )}</strong> requiere ${action}.</p>${answers}<p><a href="${this.escape(
-        link,
-      )}">Abrir ticket y responder</a></p><p>Este enlace es personal, de un solo uso y tiene vencimiento.</p>`,
-    });
+    const logId = logs[0]?.IdNotificacion;
+    if (!logId) {
+      throw new Error(
+        `No se pudo crear la bitácora de notificación del ticket ${target.NumeroTicket}.`,
+      );
+    }
+
+    try {
+      const token = randomBytes(32).toString('base64url');
+      const expiration = new Date(
+        Date.now() +
+          Number(
+            this.config.get('TICKETS_APPROVAL_TOKEN_EXPIRATION_HOURS') ?? 120,
+          ) *
+            3600000,
+      );
+      await this.database.executeProcedure(
+        'PACO_TICKET_EMITIR_TOKEN_APROBACION',
+        {
+          IdTicket: String(target.IdTicket),
+          Etapa: target.Etapa,
+          Correo: delivery.to,
+          HashHex: this.hashToken(token),
+          Expira: expiration.toISOString(),
+        },
+      );
+      const base = this.publicTicketResponseUrl(
+        'ticket/aprobar',
+        'TICKETS_APPROVAL_RESPONSE_URL',
+      );
+      const link = `${base}${
+        base.includes('?') ? '&' : '?'
+      }token=${encodeURIComponent(token)}`;
+      const action =
+        target.Etapa === 'JEFE_MARCA'
+          ? 'definir el plan de acción'
+          : target.Etapa === 'EJECUCION'
+          ? 'iniciar la ejecución del plan'
+          : 'aprobar o rechazar el plan';
+      const role = this.roleLabel(target.Etapa);
+      const answers = await this.flowSummary(target.IdTicket);
+      await this.mailer.send({
+        to: delivery.to,
+        subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${
+          target.NumeroTicket
+        }: acción requerida - ${role}`,
+        html: `${this.demoBanner(delivery, role)}<p>Hola ${this.escape(
+          role,
+        )},</p><p>Su rol en este ticket es: <strong>${this.escape(
+          role,
+        )}</strong>.</p><p>El ticket <strong>${this.escape(
+          target.NumeroTicket,
+        )}</strong> requiere ${action}.</p>${answers}<p><a href="${this.escape(
+          link,
+        )}">Abrir ticket y responder</a></p><p>Este enlace es personal, de un solo uso y tiene vencimiento.</p>`,
+      });
+      await this.finishNotification(logId, 'ENVIADO', '');
+      this.logger.log(
+        `Notificación ${logId} enviada para ticket ${target.NumeroTicket}, etapa=${target.Etapa}, destino=${delivery.to}.`,
+      );
+    } catch (error) {
+      await this.finishNotification(
+        logId,
+        'ERROR',
+        (error as Error).message.slice(0, 2000),
+      );
+      throw error;
+    }
   }
 
   /** Reemplaza solo al Jefe de Marca durante sus vacaciones; las demÃ¡s etapas

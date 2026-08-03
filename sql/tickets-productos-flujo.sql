@@ -350,7 +350,7 @@ BEGIN
   INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
   SELECT @Ticket,I.IdProducto,P.Estado,
     CASE WHEN @Etapa='JEFE_MARCA' AND I.Decision='PROPONER_PLAN'
-      AND P.Estado IN('PLAN_APROBADO','PENDIENTE_GERENCIA_GENERAL')
+      AND P.Estado IN('PENDIENTE_CIERRE','PENDIENTE_GERENCIA_GENERAL')
       THEN 'PROPONER_PLAN_SIN_MERCADEO' ELSE I.Decision END,
     CASE WHEN I.Decision='RECHAZAR_CERRAR_POLITICA' THEN COALESCE(NULLIF(I.Comentario,''),
       'Producto rechazado y cerrado por reporte con menos de tres meses de anticipacion.')

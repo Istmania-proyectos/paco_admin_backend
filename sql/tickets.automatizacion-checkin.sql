@@ -179,7 +179,9 @@ BEGIN
     ) U
     LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Clientes_S4] C
         ON C.cliente = R.cliente
-    WHERE RD.formulario = @Formulario;
+    WHERE RD.formulario = @Formulario
+      AND R.creado >= CONVERT(DATETIME, '20260801', 112)
+      AND R.migradoticket IS NULL;
 
     ;WITH Casas AS (
         SELECT respuesta,
@@ -629,6 +631,27 @@ BEGIN
             FROM dbo.tbl_Ticket WHERE IdTicket = @IdTicket;
 
             COMMIT;
+
+            /* Marca únicamente respuestas incorporadas correctamente por la
+               automatización real. Una demo no debe consumir el origen. La
+               validación contra tbl_Ticket_Checkin_Origen también permite
+               recuperar el flag si una ejecución anterior creó el ticket,
+               pero falló antes de actualizar CheckIn. */
+            IF NULLIF(@CorreoDemo, '') IS NULL
+               AND @IdTicket IS NOT NULL
+                UPDATE R
+                SET migradoticket = GETDATE()
+                FROM [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Respuestas] R
+                WHERE R.creado >= CONVERT(DATETIME, '20260801', 112)
+                  AND R.migradoticket IS NULL
+                  AND EXISTS (
+                      SELECT 1
+                      FROM dbo.tbl_Ticket_Checkin_Origen O
+                      WHERE O.IdTicket = @IdTicket
+                        AND O.Formulario = @Formulario
+                        AND O.Respuesta = R.respuesta
+                        AND O.JefeMarcaUsuarioId = @JefeId
+                  );
 
             IF @CantidadNueva > 0
                 UPDATE #Salida

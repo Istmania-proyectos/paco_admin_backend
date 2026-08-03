@@ -1,0 +1,8 @@
+<svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 225 225" width="225" height="225">
+	<defs>
+		<image  width="163" height="153" id="img1" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAKMAAACZAgMAAAA+42LYAAAAAXNSR0IB2cksfwAAAAxQTFRFAAAAAAAADQ0NGhoa33MdIwAAAAR0Uk5TAP//T3hM8wQAAAETSURBVHic7dgxDoJAEIXhWRMKY01vb23PASwo2Pt4FFvFwiN4H45Aoa6IkHkPsgmGRDKTKGTzFfs3xl0nZIorWXRsrSgjZZJX91/LNKtvcdLLgyQR6QoRkkTk+iCyO8bIJBchSUSmmQhJItK/PiQJZQhiSVNkCGJJKEMQS0Lp39+YBLLZJtnoBNkEkSSQTRBJAuk/T0jSst2muEushCQt2yBM0rINwiQt/fdNJynZbVNW51ipk5TsgiBJyS4IkpT0vXeVNIMME/a6OcHypN+Q/dakSZMmTZo0adKkyWVKD3+yiQwoSHXCQBlOI/8s8YwwJPGWY0jimDRp0uTcMmZMLkv27/LGpnb9+8GxqVz/znFsyicG8jb5UuB3ZgAAAABJRU5ErkJggg=="/>
+	</defs>
+	<style>
+	</style>
+	<use id="Capa 1" href="#img1" x="31" y="36"/>
+</svg>

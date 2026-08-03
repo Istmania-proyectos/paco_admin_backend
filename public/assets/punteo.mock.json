@@ -1,0 +1,32 @@
+[
+  {
+    "id": 2177,
+    "latNuevo": 14.84691,
+    "lonNuevo": -88.8318033,
+    "cliente": "0005005182",
+    "nombreCliente": "PULPERIA LARA",
+    "latAnterior": 14.846286,
+    "lonAnterior": -88.831926,
+    "vendedor": "S09"
+  },
+  {
+    "id": 2178,
+    "latNuevo": 15.316112,
+    "lonNuevo": -87.999224,
+    "cliente": "0005006200",
+    "nombreCliente": "ABARROTERIA LA BENDICION",
+    "latAnterior": 15.315789,
+    "lonAnterior": -87.998700,
+    "vendedor": "S04"
+  },
+  {
+    "id": 2179,
+    "latNuevo": 13.491192,
+    "lonNuevo": -87.693315,
+    "cliente": "0005007301",
+    "nombreCliente": "TIENDA LA ECONOMICA",
+    "latAnterior": 13.491500,
+    "lonAnterior": -87.693000,
+    "vendedor": "S15"
+  }
+]

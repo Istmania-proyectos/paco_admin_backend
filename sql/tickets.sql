@@ -659,6 +659,35 @@ BEGIN
         IF @Accion = 'INICIAR_EJECUCION'
             UPDATE dbo.tbl_Ticket_Plan_Accion SET Estado = 'EN_EJECUCION', FechaActualizacion = SYSUTCDATETIME()
             WHERE IdPlanAccion = (SELECT MAX(IdPlanAccion) FROM dbo.tbl_Ticket_Plan_Accion WHERE IdTicket = @Ticket);
+
+        /* Mantiene el flujo por producto alineado cuando la transición se
+           realiza desde la bandeja administrativa y no desde un token. */
+        IF OBJECT_ID(N'dbo.tbl_Ticket_Producto', N'U') IS NOT NULL
+        BEGIN
+            IF @Accion = 'PROPONER_PLAN'
+                UPDATE dbo.tbl_Ticket_Producto
+                SET Estado = 'PENDIENTE_MERCADEO',
+                    FechaActualizacion = SYSUTCDATETIME()
+                WHERE IdTicket = @Ticket
+                  AND Estado IN ('PENDIENTE_PLAN','REABIERTO_URGENTE');
+
+            IF @Accion IN ('APROBAR_MERCADEO','RECHAZAR_MERCADEO')
+                UPDATE dbo.tbl_Ticket_Producto
+                SET Estado = @Nuevo, FechaActualizacion = SYSUTCDATETIME()
+                WHERE IdTicket = @Ticket AND Estado = 'PENDIENTE_MERCADEO';
+
+            IF @Accion IN ('APROBAR_GERENCIA','RECHAZAR_GERENCIA')
+                UPDATE dbo.tbl_Ticket_Producto
+                SET Estado = @Nuevo, FechaActualizacion = SYSUTCDATETIME()
+                WHERE IdTicket = @Ticket AND Estado = 'PENDIENTE_GERENCIA_GENERAL';
+
+            IF @Accion = 'INICIAR_EJECUCION'
+                UPDATE dbo.tbl_Ticket_Producto
+                SET Estado = 'PENDIENTE_CIERRE',
+                    FechaActualizacion = SYSUTCDATETIME()
+                WHERE IdTicket = @Ticket AND Estado = 'PLAN_APROBADO';
+        END
+
         UPDATE dbo.tbl_Ticket
         SET Estado = @Nuevo,
             Prioridad = CASE WHEN @Nuevo = 'REABIERTO_URGENTE' THEN 'URGENTE' ELSE Prioridad END,

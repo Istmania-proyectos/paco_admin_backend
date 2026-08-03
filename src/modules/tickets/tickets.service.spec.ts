@@ -132,6 +132,54 @@ describe('TicketsService automation', () => {
     expect(delivery.isDemo).toBe(false);
   });
 
+  it('registra en bitácora los correos del flujo de aprobación', async () => {
+    configValues.TICKETS_APPROVAL_RESPONSE_URL =
+      'http://localhost/ticket/aprobar';
+    const { service, database, mailer } = setup([]);
+    database.query.mockResolvedValue([{ EsDemo: 0, CorreoDemo: null }]);
+    database.executeProcedure.mockImplementation(
+      (procedure: string, params: any) => {
+        if (procedure === 'PACO_INSERT_TICKET' && params.Option === '3') {
+          return Promise.resolve([{ IdNotificacion: 77 }]);
+        }
+        return Promise.resolve([]);
+      },
+    );
+    jest
+      .spyOn(service as any, 'flowSummary')
+      .mockResolvedValue('<p>Resumen</p>');
+
+    await (service as any).sendApprovalEmail({
+      IdTicket: 1,
+      NumeroTicket: 'TKT-0000000001',
+      Estado: 'PENDIENTE_MERCADEO',
+      Etapa: 'MERCADEO',
+      CorreoDestino: 'mercadeo@test.local',
+    });
+
+    expect(database.executeProcedure).toHaveBeenCalledWith(
+      'PACO_INSERT_TICKET',
+      expect.objectContaining({
+        Option: '3',
+        Param1: '1',
+        Param2: 'mercadeo@test.local',
+        Param3: 'PENDIENTE_MERCADEO',
+      }),
+    );
+    expect(mailer.send).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'mercadeo@test.local' }),
+    );
+    expect(database.executeProcedure).toHaveBeenCalledWith(
+      'PACO_INSERT_TICKET',
+      expect.objectContaining({
+        Option: '4',
+        Param1: '77',
+        Param2: 'ENVIADO',
+      }),
+    );
+    delete configValues.TICKETS_APPROVAL_RESPONSE_URL;
+  });
+
   it('tolera saltos de linea insertados por el cliente de correo', async () => {
     const { service, database } = setup([{ TokenEstado: 'VALIDO' }]);
     const cleanToken = 'abcDEF_123-xyz';

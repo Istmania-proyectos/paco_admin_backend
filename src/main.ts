@@ -19,7 +19,18 @@ async function bootstrap() {
     bodyParser: false,
   });
   const logger = new Logger('Bootstrap');
+  const httpLogger = new Logger('HTTP');
   app.getHttpAdapter().getInstance().set('etag', false);
+
+  app.use((request, response, next) => {
+    const startedAt = Date.now();
+    response.on('finish', () => {
+      httpLogger.log(
+        `${request.method} ${request.originalUrl} ${response.statusCode} ${Date.now() - startedAt}ms`,
+      );
+    });
+    next();
+  });
 
   const bodyLimit = process.env.REQUEST_BODY_LIMIT ?? '20mb';
   app.useBodyParser('json', { limit: bodyLimit });
@@ -60,9 +71,6 @@ async function bootstrap() {
     app.useStaticAssets(frontendPath, { index: false });
     app.use((request, response, next) => {
       const requestPath = request.path.toLowerCase();
-      if (request.method === 'GET' && requestPath === '/') {
-        return response.redirect('/login');
-      }
       if (
         request.method === 'GET' &&
         request.accepts('html') &&
