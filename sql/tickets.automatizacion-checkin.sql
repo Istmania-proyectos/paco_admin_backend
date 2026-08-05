@@ -762,6 +762,19 @@ BEGIN
             FOR JSON PATH, INCLUDE_NULL_VALUES)
     FROM dbo.tbl_Ticket_Notificacion X INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
 
+    IF OBJECT_ID(N'dbo.tbl_Ticket_Reapertura', N'U') IS NOT NULL
+    BEGIN
+        INSERT dbo.Ticket_Demo_Reset_Archivo(
+            IdCorte, FechaCorte, Tabla, Cantidad, DatosJson
+        )
+        SELECT @Corte, @Fecha, 'tbl_Ticket_Reapertura', COUNT_BIG(*),
+               (SELECT X.* FROM dbo.tbl_Ticket_Reapertura X
+                INNER JOIN @Ids I ON I.IdTicket=X.IdTicket
+                FOR JSON PATH, INCLUDE_NULL_VALUES)
+        FROM dbo.tbl_Ticket_Reapertura X
+        INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
+    END
+
     DELETE X FROM dbo.tbl_Ticket_Checkin_Grupo X
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Checkin_Origen X
@@ -773,6 +786,9 @@ BEGIN
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Token_Vendedor X
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
+    IF OBJECT_ID(N'dbo.tbl_Ticket_Reapertura', N'U') IS NOT NULL
+        DELETE X FROM dbo.tbl_Ticket_Reapertura X
+        INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Notificacion X
     INNER JOIN @Ids I ON I.IdTicket=X.IdTicket;
     DELETE X FROM dbo.tbl_Ticket_Historial X

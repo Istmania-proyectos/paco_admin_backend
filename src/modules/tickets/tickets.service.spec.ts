@@ -194,6 +194,35 @@ describe('TicketsService automation', () => {
     );
   });
 
+  it('sugiere al vendedor y su supervisor al iniciar la ejecución', async () => {
+    const { service, database } = setup([]);
+    database.executeProcedure.mockImplementation((procedure: string) => {
+      if (procedure === 'PACO_TICKET_GET_APROBACION') {
+        return Promise.resolve([
+          { TokenEstado: 'VALIDO', IdTicket: 18, Etapa: 'EJECUCION' },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+    database.query.mockResolvedValue([
+      {
+        correoVendedor: 'vendedor@istmania.hn',
+        correoSupervisor: 'SUPERVISOR@istmania.hn',
+      },
+    ]);
+
+    const ticket = await service.getApprovalTicket('abcDEF_123-xyz');
+
+    expect(ticket.correosCcSugeridos).toEqual([
+      'vendedor@istmania.hn',
+      'supervisor@istmania.hn',
+    ]);
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining('SG.codigo_vendedor = T.CodigoVendedor'),
+      { ticketId: 18 },
+    );
+  });
+
   it('notifica el cierre al correo demo si el vendedor no tiene correo', async () => {
     const { service, database } = setup([]);
     database.executeProcedure

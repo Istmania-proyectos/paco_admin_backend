@@ -150,7 +150,7 @@ export class TicketsController {
     @Body() dto: StartTicketDemoDto,
     @Req() request: AuthenticatedRequest,
   ) {
-    return this.tickets.startDemo(dto.codigo, request.user);
+    return this.tickets.startDemo(dto.codigo, request.user, dto.cantidad);
   }
 
   @Post('demo/limpiar')

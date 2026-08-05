@@ -77,6 +77,11 @@ interface SellerResponseResult extends TicketTransitionResult {
     | 'ESTADO_INVALIDO';
 }
 
+interface ExecutionSuggestedEmails {
+  correoVendedor?: string | null;
+  correoSupervisor?: string | null;
+}
+
 @Injectable()
 export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(TicketsService.name);
@@ -390,10 +395,17 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     };
   }
 
-  async startDemo(code: string, user: JwtPayload) {
+  async startDemo(code: string, user: JwtPayload, limitTickets = 1) {
     const demoEmail = this.assertDemoAccess(code, user);
 
     const current = await this.getDemoStatus();
+    const ticketsDemoReiniciados = current.ticketsDemo
+      ? await this.clearAllDemoTickets()
+      : 0;
+    current.ticketsDemo = Math.max(
+      0,
+      current.ticketsDemo - ticketsDemoReiniciados,
+    );
     if (current.ticketsDemo > 0) {
       throw new ConflictException(
         'Ya existen tickets de demostración activos. Resuélvalos o límpielos antes de iniciar otra demo.',
@@ -401,7 +413,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const result = await this.runCheckinAutomation(true, 14, undefined, {
-      limitTickets: 2,
+      limitTickets,
       demoEmail,
     });
     const created = result.grupos.filter(
@@ -417,7 +429,8 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     return {
       modo: 'DEMO',
       correoDemo: demoEmail,
-      limiteSolicitado: 2,
+      limiteSolicitado: limitTickets,
+      ticketsDemoReiniciados,
       ticketsCreados: created.length,
       tickets: created.map((row: any) => ({
         IdTicket: row.IdTicket,
@@ -427,6 +440,24 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         RolInicial: 'JEFE_MARCA',
       })),
     };
+  }
+
+  /** Reinicia demos anteriores y conserva el respaldo generado por SQL. */
+  private async clearAllDemoTickets(): Promise<number> {
+    const targets = await this.database.query<{ CorreoDemo: string }>(`
+      SELECT DISTINCT CorreoDemo
+      FROM dbo.tbl_Ticket
+      WHERE EsDemo = 1
+        AND NULLIF(LTRIM(RTRIM(CorreoDemo)), '') IS NOT NULL
+    `);
+    let deleted = 0;
+    for (const target of targets) {
+      const rows = await this.database.executeProcedure<{
+        TicketsEliminados: number;
+      }>('PACO_TICKET_DEMO_LIMPIAR', { CorreoDemo: target.CorreoDemo });
+      deleted += Number(rows[0]?.TicketsEliminados ?? 0);
+    }
+    return deleted;
   }
 
   async clearDemo(code: string, user: JwtPayload) {
@@ -720,11 +751,48 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     const item = rows[0];
     if (!item) throw new NotFoundException('Enlace inexistente.');
     this.assertSellerTokenStatus(item.TokenEstado);
-    const productos = await this.database.executeProcedure<any>(
-      'PACO_TICKET_PRODUCTOS_GET',
-      { IdTicket: String(item.IdTicket), Etapa: item.Etapa },
+    const [productos, correosCcSugeridos] = await Promise.all([
+      this.database.executeProcedure<any>('PACO_TICKET_PRODUCTOS_GET', {
+        IdTicket: String(item.IdTicket),
+        Etapa: item.Etapa,
+      }),
+      item.Etapa === 'EJECUCION'
+        ? this.getExecutionSuggestedEmails(item.IdTicket)
+        : Promise.resolve([]),
+    ]);
+    return { ...item, Productos: productos, correosCcSugeridos };
+  }
+
+  /**
+   * Correos que se muestran inicialmente al iniciar la ejecución. No se
+   * persisten ni se fuerzan: el usuario puede eliminarlos antes de enviar.
+   */
+  private async getExecutionSuggestedEmails(
+    ticketId: string | number,
+  ): Promise<string[]> {
+    const rows = await this.database.query<ExecutionSuggestedEmails>(
+      `SELECT
+         T.CorreoVendedor AS correoVendedor,
+         SG.email_supervisor AS correoSupervisor
+       FROM dbo.tbl_Ticket T
+       LEFT JOIN dbo.tbl_Supervisor_Gerente SG
+         ON SG.codigo_vendedor = T.CodigoVendedor
+       WHERE T.IdTicket = @ticketId`,
+      { ticketId },
     );
-    return { ...item, Productos: productos };
+    const emails = rows[0];
+    if (!emails) return [];
+
+    return [emails.correoVendedor, emails.correoSupervisor].reduce<string[]>(
+      (suggested, email) => {
+        const normalized = email?.trim().toLowerCase();
+        if (normalized && !suggested.includes(normalized)) {
+          suggested.push(normalized);
+        }
+        return suggested;
+      },
+      [],
+    );
   }
   async respondApproval(dto: ApprovalTicketResponseDto) {
     const { token, ...body } = dto;
