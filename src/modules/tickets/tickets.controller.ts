@@ -24,6 +24,7 @@ import {
 } from './dto/ticket-automation.dto';
 import { StartTicketDemoDto } from './dto/ticket-demo.dto';
 import { TicketActionDto } from './dto/ticket-action.dto';
+import { TicketProductActionDto } from './dto/ticket-product-action.dto';
 import { TicketQueryDto } from './dto/ticket-query.dto';
 import { TicketsService } from './tickets.service';
 import {
@@ -129,10 +130,7 @@ export class TicketsController {
 
   @Patch('usuarios/:id/vacaciones')
   @UseGuards(TicketSettingsGuard)
-  updateVacations(
-    @Param('id') id: string,
-    @Body() dto: UpdateVacationsDto,
-  ) {
+  updateVacations(@Param('id') id: string, @Body() dto: UpdateVacationsDto) {
     return this.tickets.updateUserVacations(id, dto.vacaciones);
   }
 
@@ -176,6 +174,15 @@ export class TicketsController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.tickets.transition(String(id), dto, request.user);
+  }
+
+  @Post(':id/productos/transiciones')
+  transitionProducts(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: TicketProductActionDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.tickets.transitionProducts(String(id), dto, request.user);
   }
 
   @Get(':id/productos')

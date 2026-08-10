@@ -269,17 +269,8 @@ BEGIN
       AND (P.FechaVencimiento IS NULL
         OR P.FechaVencimiento>=DATEADD(MONTH,3,CONVERT(DATE,COALESCE(T.FechaRespuestaOrigen,T.FechaCreacion))))
   ) THROW 51000,'El producto no cumple la condicion de vencimiento menor a tres meses.',1;
-  IF EXISTS(
-    SELECT 1 FROM dbo.tbl_Ticket_Producto P
-    WHERE P.IdTicket=@Ticket
-      AND (
-        (@Etapa='JEFE_MARCA' AND P.Estado IN('PENDIENTE_PLAN','REABIERTO_URGENTE'))
-        OR (@Etapa='MERCADEO' AND P.Estado='PENDIENTE_MERCADEO')
-        OR (@Etapa='GERENCIA_GENERAL' AND P.Estado='PENDIENTE_GERENCIA_GENERAL')
-        OR (@Etapa='EJECUCION' AND P.Estado='PLAN_APROBADO')
-      )
-      AND NOT EXISTS(SELECT 1 FROM @Items I WHERE I.IdProducto=P.IdTicketProducto)
-  ) THROW 51000,'Debe responder todos los productos pendientes de esta etapa.',1;
+  /* Una respuesta puede cubrir solo una parte del ticket. Los productos que
+     permanecen pendientes conservan disponible el mismo enlace de correo. */
 
   IF @Etapa='JEFE_MARCA'
   BEGIN
@@ -356,8 +347,17 @@ BEGIN
       'Producto rechazado y cerrado por reporte con menos de tres meses de anticipacion.')
       ELSE I.Comentario END,@Correo,@Correo,@Etapa
   FROM @Items I JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto;
-  UPDATE dbo.tbl_Ticket_Aprobacion_Token SET FechaUso=SYSUTCDATETIME() WHERE IdToken=@Token;
   EXEC dbo.PACO_TICKET_PRODUCTOS_RECALCULAR @Ticket;
+  UPDATE dbo.tbl_Ticket_Aprobacion_Token
+  SET FechaUso=SYSUTCDATETIME()
+  WHERE IdToken=@Token AND NOT EXISTS(
+    SELECT 1 FROM dbo.tbl_Ticket_Producto P WHERE P.IdTicket=@Ticket AND (
+      (@Etapa='JEFE_MARCA' AND P.Estado IN('PENDIENTE_PLAN','REABIERTO_URGENTE'))
+      OR (@Etapa='MERCADEO' AND P.Estado='PENDIENTE_MERCADEO')
+      OR (@Etapa='GERENCIA_GENERAL' AND P.Estado='PENDIENTE_GERENCIA_GENERAL')
+      OR (@Etapa='EJECUCION' AND P.Estado='PLAN_APROBADO')
+    )
+  );
   COMMIT;
   SELECT IdTicket,NumeroTicket,Estado,@Etapa EtapaRespuesta
   FROM dbo.tbl_Ticket WHERE IdTicket=@Ticket;
@@ -404,18 +404,18 @@ BEGIN
   INSERT @Items SELECT IdProducto,Accion,Comentario FROM OPENJSON(@Json,'$.productos')
     WITH(IdProducto BIGINT '$.idTicketProducto',Accion VARCHAR(20) '$.accion',Comentario NVARCHAR(2000) '$.comentario');
   IF NOT EXISTS(SELECT 1 FROM @Items) THROW 51000,'Debe responder al menos un producto.',1;
-  IF EXISTS(
-    SELECT 1 FROM dbo.tbl_Ticket_Producto P WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_CIERRE'
-      AND NOT EXISTS(SELECT 1 FROM @Items I WHERE I.IdProducto=P.IdTicketProducto)
-  ) THROW 51000,'Debe responder todos los productos pendientes de cierre.',1;
+  /* El vendedor puede cerrar o reabrir productos en varias sesiones. */
   UPDATE P SET Estado=CASE I.Accion WHEN 'CERRAR' THEN 'CERRADO' ELSE 'REABIERTO_URGENTE' END,FechaActualizacion=SYSUTCDATETIME()
   FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
   WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_CIERRE' AND I.Accion IN('CERRAR','REABRIR');
   INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
   SELECT @Ticket,I.IdProducto,P.Estado,I.Accion,I.Comentario,@Correo,@Correo,'VENDEDOR_EXTERNO'
   FROM @Items I JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto;
-  UPDATE dbo.tbl_Ticket_Token_Vendedor SET FechaUso=SYSUTCDATETIME() WHERE IdTicket=@Ticket AND FechaUso IS NULL;
   EXEC dbo.PACO_TICKET_PRODUCTOS_RECALCULAR @Ticket;
+  UPDATE dbo.tbl_Ticket_Token_Vendedor
+  SET FechaUso=SYSUTCDATETIME()
+  WHERE IdToken=@Token
+    AND NOT EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@Ticket AND Estado='PENDIENTE_CIERRE');
   COMMIT;
   SELECT 'OK' Resultado,T.IdTicket,T.NumeroTicket,T.Estado,T.FechaActualizacion FROM dbo.tbl_Ticket T WHERE T.IdTicket=@Ticket;
 END

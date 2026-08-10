@@ -13,6 +13,7 @@ import { DatabaseService } from '../database/database.service';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import { TicketActionDto } from './dto/ticket-action.dto';
+import { TicketProductActionDto } from './dto/ticket-product-action.dto';
 import { VendorTicketActionDto } from './dto/vendor-ticket-action.dto';
 import { TicketQueryDto } from './dto/ticket-query.dto';
 import { SmtpMailerService } from '../mail/smtp-mailer.service';
@@ -624,6 +625,86 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     return result;
   }
 
+  async transitionProducts(
+    id: string,
+    dto: TicketProductActionDto,
+    user: JwtPayload,
+  ) {
+    const action = {
+      PROPONER_PLAN: {
+        stage: 'JEFE_MARCA',
+        decision: 'PROPONER_PLAN',
+        role: 'TICKET_JEFE_MARCA',
+      },
+      APROBAR_MERCADEO: {
+        stage: 'MERCADEO',
+        decision: 'APROBAR',
+        role: 'TICKET_MERCADEO',
+      },
+      RECHAZAR_MERCADEO: {
+        stage: 'MERCADEO',
+        decision: 'RECHAZAR',
+        role: 'TICKET_MERCADEO',
+      },
+      APROBAR_GERENCIA: {
+        stage: 'GERENCIA_GENERAL',
+        decision: 'APROBAR',
+        role: 'TICKET_GERENCIA_GENERAL',
+      },
+      RECHAZAR_GERENCIA: {
+        stage: 'GERENCIA_GENERAL',
+        decision: 'RECHAZAR',
+        role: 'TICKET_GERENCIA_GENERAL',
+      },
+      INICIAR_EJECUCION: {
+        stage: 'EJECUCION',
+        decision: 'INICIAR_EJECUCION',
+        role: 'TICKET_SUPERVISOR',
+      },
+    }[dto.accion];
+    if (!action)
+      throw new BadRequestException('Acción por producto no válida.');
+
+    const roles = this.parseRoles(user.roles);
+    if (
+      !roles.includes(action.role) &&
+      !(action.stage === 'EJECUCION' && roles.includes('TICKET_JEFE_MARCA'))
+    ) {
+      throw new ConflictException(
+        'No tiene permiso para ejecutar esta acción.',
+      );
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    const email = String(user.sub ?? user.id).trim();
+    await this.database.executeProcedure(
+      'PACO_TICKET_EMITIR_TOKEN_APROBACION',
+      {
+        IdTicket: id,
+        Etapa: action.stage,
+        Correo: email,
+        HashHex: this.hashToken(token),
+        Expira: new Date(Date.now() + 5 * 60_000).toISOString(),
+      },
+    );
+    const rows = await this.database.executeProcedure<TicketTransitionResult>(
+      'PACO_TICKET_PRODUCTOS_RESPONDER_APROBACION',
+      {
+        HashHex: this.hashToken(token),
+        Json: JSON.stringify({
+          productos: dto.productos.map((product) => ({
+            ...product,
+            decision: action.decision,
+          })),
+        }),
+      },
+    );
+    const result = rows[0];
+    if (!result) throw new NotFoundException('Ticket inexistente.');
+    await this.notifySafely(result, [action.stage]);
+    return result;
+  }
+
   async getSellerTicket(token: string) {
     const hash = this.hashToken(token);
     const result = await this.database.executeProcedure<SellerTokenLookup>(
@@ -652,7 +733,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       );
       const response = result[0];
       if (!response) throw new NotFoundException('Token inexistente.');
-      await this.notifySafely(response);
+      await this.notifySafely(response, ['VENDEDOR']);
       return {
         NumeroTicket: response.NumeroTicket,
         Estado: response.Estado,
@@ -820,7 +901,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         ) {
           await this.sendExecutionCopies(result, body.correosCc);
         }
-        await this.notifySafely(result);
+        await this.notifySafely(result, [result.EtapaRespuesta]);
       }
       return { estado: result?.Estado };
     }
@@ -833,7 +914,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       if (body.decision === 'INICIAR_EJECUCION') {
         await this.sendExecutionCopies(result, body.correosCc);
       }
-      await this.notifySafely(result);
+      await this.notifySafely(result, [result.EtapaRespuesta]);
     }
     return { estado: result?.Estado };
   }
@@ -986,13 +1067,19 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private async notifyNextRecipients(transition: TicketTransitionResult) {
+  private async notifyNextRecipients(
+    transition: TicketTransitionResult,
+    excludedStages: string[] = [],
+  ) {
     const productDestinations = await this.database.executeProcedure<any>(
       'PACO_TICKET_PRODUCTOS_DESTINOS',
       { IdTicket: String(transition.IdTicket) },
     );
     const validProductDestinations = productDestinations.filter(
-      (destination) => destination?.Etapa && destination?.CorreoDestino,
+      (destination) =>
+        destination?.Etapa &&
+        destination?.CorreoDestino &&
+        !excludedStages.includes(destination.Etapa),
     );
     if (validProductDestinations.length) {
       for (const destination of validProductDestinations) {
@@ -1243,9 +1330,12 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     return email ? { ...target, CorreoDestino: email } : target;
   }
 
-  private async notifySafely(transition: TicketTransitionResult) {
+  private async notifySafely(
+    transition: TicketTransitionResult,
+    excludedStages: string[] = [],
+  ) {
     try {
-      await this.notifyNextRecipients(transition);
+      await this.notifyNextRecipients(transition, excludedStages);
     } catch (error) {
       this.logger.error(
         `No se pudo preparar la notificación del ticket ${
@@ -1253,6 +1343,19 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         }: ${(error as Error).message}`,
       );
     }
+  }
+
+  private parseRoles(value: string | undefined): string[] {
+    try {
+      const parsed = JSON.parse(value ?? '[]');
+      if (Array.isArray(parsed)) return parsed.map((role) => String(role));
+    } catch {
+      // Los tokens antiguos pueden contener una lista separada por comas.
+    }
+    return String(value ?? '')
+      .split(',')
+      .map((role) => role.trim())
+      .filter(Boolean);
   }
 
   private async sendAndLog(recipient: TicketRecipient) {
@@ -1413,7 +1516,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       url.search = '';
       url.hash = '';
       url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
-      return `${url.toString()}#/${route}`;
+      return new URL(route, url).toString();
     }
 
     const legacyUrl = this.config.get<string>(legacyKey)?.trim();
