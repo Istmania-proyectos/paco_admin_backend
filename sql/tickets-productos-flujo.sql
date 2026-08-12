@@ -148,20 +148,26 @@ CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_PRODUCTOS_RECALCULAR @IdTicket BIGINT
 AS
 BEGIN
   SET NOCOUNT ON;
-  DECLARE @Total INT,@Distintos INT,@Unico VARCHAR(40),@Nuevo VARCHAR(40);
-  SELECT @Total=COUNT(*),@Distintos=COUNT(DISTINCT Estado),@Unico=MAX(Estado)
+  DECLARE @Total INT,@Pendientes INT,@EstadosPendientes INT,
+    @UnicoPendiente VARCHAR(40),@Nuevo VARCHAR(40);
+  SELECT @Total=COUNT(*)
   FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@IdTicket;
   IF @Total=0 RETURN;
+  /* Los productos cerrados, cancelados o rechazados por polÃ­tica ya no
+     requieren una etapa. No deben dejar el ticket en proceso parcial cuando
+     todos los productos que continÃºan ya llegaron a la misma etapa. */
+  SELECT @Pendientes=COUNT(*),@EstadosPendientes=COUNT(DISTINCT Estado),
+    @UnicoPendiente=MAX(Estado)
+  FROM dbo.tbl_Ticket_Producto
+  WHERE IdTicket=@IdTicket
+    AND Estado NOT IN('CERRADO','RECHAZADO_POLITICA','CANCELADO');
   SET @Nuevo=CASE
-    WHEN NOT EXISTS(
-      SELECT 1 FROM dbo.tbl_Ticket_Producto
-      WHERE IdTicket=@IdTicket AND Estado NOT IN('CERRADO','RECHAZADO_POLITICA','CANCELADO')
-    ) THEN CASE
+    WHEN @Pendientes=0 THEN CASE
       WHEN EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@IdTicket AND Estado='CERRADO')
         THEN 'CERRADO'
       ELSE 'CANCELADO'
     END
-    WHEN @Distintos=1 THEN @Unico
+    WHEN @EstadosPendientes=1 THEN @UnicoPendiente
     ELSE 'EN_PROCESO_PARCIAL'
   END;
   UPDATE dbo.tbl_Ticket SET Estado=@Nuevo,
@@ -251,9 +257,11 @@ BEGIN
 
   DECLARE @Items TABLE(
     IdProducto BIGINT,Decision VARCHAR(30),Tipo VARCHAR(50),Descripcion NVARCHAR(MAX),
-    Fecha DATE,Responsable NVARCHAR(450),Comentario NVARCHAR(2000)
+    Fecha DATE,Responsable NVARCHAR(450),Comentario NVARCHAR(2000),
+    EstadoAnterior VARCHAR(40) NULL
   );
-  INSERT @Items SELECT IdProducto,Decision,Tipo,Descripcion,Fecha,Responsable,Comentario
+  INSERT @Items(IdProducto,Decision,Tipo,Descripcion,Fecha,Responsable,Comentario)
+  SELECT IdProducto,Decision,Tipo,Descripcion,Fecha,Responsable,Comentario
   FROM OPENJSON(@Json,'$.productos') WITH(
     IdProducto BIGINT '$.idTicketProducto',Decision VARCHAR(30) '$.decision',
     Tipo VARCHAR(50) '$.tipoAccion',Descripcion NVARCHAR(MAX) '$.descripcionPlan',
@@ -271,6 +279,12 @@ BEGIN
   ) THROW 51000,'El producto no cumple la condicion de vencimiento menor a tres meses.',1;
   /* Una respuesta puede cubrir solo una parte del ticket. Los productos que
      permanecen pendientes conservan disponible el mismo enlace de correo. */
+  /* Se captura antes de actualizar para que el historial tenga la transiciÃ³n
+     real del producto, tanto por correo como desde la bandeja web. */
+  UPDATE I SET EstadoAnterior=P.Estado
+  FROM @Items I
+  JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto
+  WHERE P.IdTicket=@Ticket;
 
   IF @Etapa='JEFE_MARCA'
   BEGIN
@@ -338,8 +352,8 @@ BEGIN
   END
   ELSE THROW 51000,'Etapa no valida.',1;
 
-  INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
-  SELECT @Ticket,I.IdProducto,P.Estado,
+  INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoAnterior,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
+  SELECT @Ticket,I.IdProducto,I.EstadoAnterior,P.Estado,
     CASE WHEN @Etapa='JEFE_MARCA' AND I.Decision='PROPONER_PLAN'
       AND P.Estado IN('PENDIENTE_CIERRE','PENDIENTE_GERENCIA_GENERAL')
       THEN 'PROPONER_PLAN_SIN_MERCADEO' ELSE I.Decision END,
@@ -400,16 +414,24 @@ BEGIN
   FROM dbo.tbl_Ticket_Token_Vendedor V WITH(UPDLOCK,HOLDLOCK)
   WHERE V.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
   IF @Token IS NULL OR @Uso IS NOT NULL OR @Expira<=SYSUTCDATETIME() THROW 51000,'Enlace invalido.',1;
-  DECLARE @Items TABLE(IdProducto BIGINT,Accion VARCHAR(20),Comentario NVARCHAR(2000));
-  INSERT @Items SELECT IdProducto,Accion,Comentario FROM OPENJSON(@Json,'$.productos')
+  DECLARE @Items TABLE(
+    IdProducto BIGINT,Accion VARCHAR(20),Comentario NVARCHAR(2000),
+    EstadoAnterior VARCHAR(40) NULL
+  );
+  INSERT @Items(IdProducto,Accion,Comentario)
+  SELECT IdProducto,Accion,Comentario FROM OPENJSON(@Json,'$.productos')
     WITH(IdProducto BIGINT '$.idTicketProducto',Accion VARCHAR(20) '$.accion',Comentario NVARCHAR(2000) '$.comentario');
   IF NOT EXISTS(SELECT 1 FROM @Items) THROW 51000,'Debe responder al menos un producto.',1;
   /* El vendedor puede cerrar o reabrir productos en varias sesiones. */
+  UPDATE I SET EstadoAnterior=P.Estado
+  FROM @Items I
+  JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto
+  WHERE P.IdTicket=@Ticket;
   UPDATE P SET Estado=CASE I.Accion WHEN 'CERRAR' THEN 'CERRADO' ELSE 'REABIERTO_URGENTE' END,FechaActualizacion=SYSUTCDATETIME()
   FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
   WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_CIERRE' AND I.Accion IN('CERRAR','REABRIR');
-  INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
-  SELECT @Ticket,I.IdProducto,P.Estado,I.Accion,I.Comentario,@Correo,@Correo,'VENDEDOR_EXTERNO'
+  INSERT dbo.tbl_Ticket_Historial(IdTicket,IdTicketProducto,EstadoAnterior,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
+  SELECT @Ticket,I.IdProducto,I.EstadoAnterior,P.Estado,I.Accion,I.Comentario,@Correo,@Correo,'VENDEDOR_EXTERNO'
   FROM @Items I JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto;
   EXEC dbo.PACO_TICKET_PRODUCTOS_RECALCULAR @Ticket;
   UPDATE dbo.tbl_Ticket_Token_Vendedor
@@ -491,10 +513,20 @@ END
 GO
 
 CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_PRODUCTOS_EXPORTAR
-  @Estado VARCHAR(40)=NULL,@Buscar NVARCHAR(250)=NULL,@FechaDesde DATE=NULL,@FechaHasta DATE=NULL
+  @Estado VARCHAR(40)=NULL,@Buscar NVARCHAR(250)=NULL,@FechaDesde NVARCHAR(20)=NULL,@FechaHasta NVARCHAR(20)=NULL,
+  @Cliente NVARCHAR(250)=NULL,@Vendedor NVARCHAR(250)=NULL
 AS
 BEGIN
   SET NOCOUNT ON;
+  DECLARE @FechaDesdeFiltro DATE=TRY_CONVERT(DATE,NULLIF(@FechaDesde,N''));
+  DECLARE @FechaHastaFiltro DATE=TRY_CONVERT(DATE,NULLIF(@FechaHasta,N''));
+  IF @FechaDesdeFiltro IS NOT NULL AND @FechaHastaFiltro IS NOT NULL AND @FechaDesdeFiltro>@FechaHastaFiltro
+    THROW 51000,'La fecha inicial no puede ser posterior a la fecha final.',1;
+  DECLARE @BuscarFiltro NVARCHAR(250)=CASE WHEN ISJSON(@Buscar)=1 THEN JSON_VALUE(@Buscar,'$.b') ELSE @Buscar END;
+  DECLARE @ClienteFiltro NVARCHAR(250)=COALESCE(NULLIF(@Cliente,N''),CASE WHEN ISJSON(@Buscar)=1 THEN JSON_VALUE(@Buscar,'$.c') END,N'');
+  DECLARE @VendedorFiltro NVARCHAR(250)=COALESCE(NULLIF(@Vendedor,N''),CASE WHEN ISJSON(@Buscar)=1 THEN JSON_VALUE(@Buscar,'$.v') END,N'');
+  DECLARE @ClienteBusqueda NVARCHAR(250)=REPLACE(REPLACE(REPLACE(@ClienteFiltro,N'·',N' '),N'-',N' '),N',',N' ');
+  DECLARE @VendedorBusqueda NVARCHAR(250)=REPLACE(REPLACE(REPLACE(@VendedorFiltro,N'·',N' '),N'-',N' '),N',',N' ');
   SELECT T.IdTicket,T.NumeroTicket,T.CodigoCliente,T.NombreCliente,T.CodigoVendedor,T.NombreVendedor,
     T.Titulo,T.Prioridad,T.Estado,T.FechaCreacion,T.FechaVencimiento,
     P.Ocurrencia ProductoNumero,P.CodigoArticulo,P.Articulo,P.Marca,P.Lote,
@@ -507,11 +539,21 @@ BEGIN
     ORDER BY X.IdPlanAccion DESC) A
   WHERE T.Activo=1
     AND (NULLIF(@Estado,'') IS NULL OR T.Estado=@Estado OR P.Estado=@Estado)
-    AND (@FechaDesde IS NULL OR T.FechaCreacion>=@FechaDesde)
-    AND (@FechaHasta IS NULL OR T.FechaCreacion<DATEADD(DAY,1,@FechaHasta))
-    AND (NULLIF(@Buscar,'') IS NULL OR T.NumeroTicket LIKE '%'+@Buscar+'%'
-      OR T.CodigoCliente LIKE '%'+@Buscar+'%' OR T.NombreCliente LIKE '%'+@Buscar+'%'
-      OR T.Titulo LIKE '%'+@Buscar+'%' OR P.CodigoArticulo LIKE '%'+@Buscar+'%' OR P.Articulo LIKE '%'+@Buscar+'%')
+    AND (NULLIF(LTRIM(RTRIM(@ClienteBusqueda)),N'') IS NULL OR NOT EXISTS(
+      SELECT 1 FROM STRING_SPLIT(@ClienteBusqueda,N' ') AS Termino
+      WHERE NULLIF(LTRIM(RTRIM(Termino.value)),N'') IS NOT NULL
+        AND CONCAT(T.CodigoCliente,N' ',T.NombreCliente) NOT LIKE N'%'+LTRIM(RTRIM(Termino.value))+N'%'
+    ))
+    AND (NULLIF(LTRIM(RTRIM(@VendedorBusqueda)),N'') IS NULL OR NOT EXISTS(
+      SELECT 1 FROM STRING_SPLIT(@VendedorBusqueda,N' ') AS Termino
+      WHERE NULLIF(LTRIM(RTRIM(Termino.value)),N'') IS NOT NULL
+        AND CONCAT(T.CodigoVendedor,N' ',T.NombreVendedor,N' ',T.CorreoVendedor) NOT LIKE N'%'+LTRIM(RTRIM(Termino.value))+N'%'
+    ))
+    AND (@FechaDesdeFiltro IS NULL OR T.FechaCreacion>=@FechaDesdeFiltro)
+    AND (@FechaHastaFiltro IS NULL OR T.FechaCreacion<DATEADD(DAY,1,@FechaHastaFiltro))
+    AND (NULLIF(@BuscarFiltro,'') IS NULL OR T.NumeroTicket LIKE '%'+@BuscarFiltro+'%'
+      OR T.CodigoCliente LIKE '%'+@BuscarFiltro+'%' OR T.NombreCliente LIKE '%'+@BuscarFiltro+'%'
+      OR T.Titulo LIKE '%'+@BuscarFiltro+'%' OR P.CodigoArticulo LIKE '%'+@BuscarFiltro+'%' OR P.Articulo LIKE '%'+@BuscarFiltro+'%')
   ORDER BY T.FechaCreacion DESC,P.Ocurrencia;
 END
 GO

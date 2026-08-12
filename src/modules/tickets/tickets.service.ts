@@ -156,18 +156,26 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       Param3: query.param3 ?? '',
       Param4: query.param4 ?? '',
       Param5: query.param5 ?? user.id,
+      Cliente: query.cliente?.trim() ?? '',
+      Vendedor: query.vendedor?.trim() ?? '',
+      FechaDesde: query.fechaDesde ?? '',
+      FechaHasta: query.fechaHasta ?? '',
     });
   }
 
   export(
     estado?: string,
     buscar?: string,
+    cliente?: string,
+    vendedor?: string,
     fechaDesde?: string,
     fechaHasta?: string,
   ) {
     return this.database.executeProcedure('PACO_TICKET_PRODUCTOS_EXPORTAR', {
       Estado: estado ?? '',
       Buscar: buscar?.trim() ?? '',
+      Cliente: cliente?.trim() ?? '',
+      Vendedor: vendedor?.trim() ?? '',
       FechaDesde: fechaDesde || null,
       FechaHasta: fechaHasta || null,
     });

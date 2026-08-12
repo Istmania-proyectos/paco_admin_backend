@@ -215,19 +215,38 @@ CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET
     @Param2 NVARCHAR(MAX),
     @Param3 NVARCHAR(MAX),
     @Param4 NVARCHAR(MAX),
-    @Param5 NVARCHAR(MAX)
+    @Param5 NVARCHAR(MAX),
+    @Cliente NVARCHAR(MAX) = '',
+    @Vendedor NVARCHAR(MAX) = '',
+    @FechaDesde NVARCHAR(MAX) = '',
+    @FechaHasta NVARCHAR(MAX) = ''
 AS
 BEGIN
     SET NOCOUNT ON;
 
     -- 1: bandeja. Param1=estado, Param2=pagina, Param3=busqueda,
     -- Param4=tamano de pagina, Param5=usuario (reservado para filtros por rol).
+    -- Cliente, Vendedor, FechaDesde y FechaHasta son filtros adicionales.
     IF @Option = 1
     BEGIN
         DECLARE @Pagina INT = ISNULL(TRY_CONVERT(INT, NULLIF(@Param2, '')), 1);
         DECLARE @Tamano INT = ISNULL(TRY_CONVERT(INT, NULLIF(@Param4, '')), 10);
+        DECLARE @BuscarBandeja NVARCHAR(MAX) = CASE WHEN ISJSON(@Param3) = 1 THEN JSON_VALUE(@Param3, '$.b') ELSE @Param3 END;
+        DECLARE @ClienteFiltro NVARCHAR(MAX) = COALESCE(NULLIF(@Cliente, ''), CASE WHEN ISJSON(@Param3) = 1 THEN JSON_VALUE(@Param3, '$.c') END, '');
+        DECLARE @VendedorFiltro NVARCHAR(MAX) = COALESCE(NULLIF(@Vendedor, ''), CASE WHEN ISJSON(@Param3) = 1 THEN JSON_VALUE(@Param3, '$.v') END, '');
+        DECLARE @FechaDesdeFiltro NVARCHAR(MAX) = COALESCE(NULLIF(@FechaDesde, ''), CASE WHEN ISJSON(@Param3) = 1 THEN JSON_VALUE(@Param3, '$.d') END, '');
+        DECLARE @FechaHastaFiltro NVARCHAR(MAX) = COALESCE(NULLIF(@FechaHasta, ''), CASE WHEN ISJSON(@Param3) = 1 THEN JSON_VALUE(@Param3, '$.h') END, '');
+        DECLARE @ClienteBusqueda NVARCHAR(MAX) = REPLACE(REPLACE(REPLACE(@ClienteFiltro, N'·', N' '), N'-', N' '), N',', N' ');
+        DECLARE @VendedorBusqueda NVARCHAR(MAX) = REPLACE(REPLACE(REPLACE(@VendedorFiltro, N'·', N' '), N'-', N' '), N',', N' ');
+        DECLARE @FechaDesdeBandeja DATE = TRY_CONVERT(DATE, NULLIF(@FechaDesdeFiltro, ''));
+        DECLARE @FechaHastaBandeja DATE = TRY_CONVERT(DATE, NULLIF(@FechaHastaFiltro, ''));
         SET @Pagina = IIF(@Pagina < 1, 1, @Pagina);
         SET @Tamano = IIF(@Tamano < 1 OR @Tamano > 100, 10, @Tamano);
+        IF @FechaDesdeBandeja IS NOT NULL AND @FechaHastaBandeja IS NOT NULL AND @FechaDesdeBandeja > @FechaHastaBandeja
+        BEGIN
+            RAISERROR('La fecha inicial no puede ser posterior a la fecha final.', 16, 1);
+            RETURN;
+        END
 
         SELECT
             T.IdTicket, T.NumeroTicket, T.CodigoCliente, T.NombreCliente,
@@ -239,11 +258,31 @@ BEGIN
         WHERE T.Activo = 1
           AND (NULLIF(@Param1, '') IS NULL OR T.Estado = @Param1)
           AND (
-              NULLIF(@Param3, '') IS NULL
-              OR T.NumeroTicket LIKE '%' + @Param3 + '%'
-              OR T.CodigoCliente LIKE '%' + @Param3 + '%'
-              OR T.NombreCliente LIKE '%' + @Param3 + '%'
-              OR T.Titulo LIKE '%' + @Param3 + '%'
+              NULLIF(LTRIM(RTRIM(@ClienteBusqueda)), '') IS NULL
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM STRING_SPLIT(@ClienteBusqueda, N' ') AS Termino
+                  WHERE NULLIF(LTRIM(RTRIM(Termino.value)), '') IS NOT NULL
+                    AND CONCAT(T.CodigoCliente, N' ', T.NombreCliente) NOT LIKE N'%' + LTRIM(RTRIM(Termino.value)) + N'%'
+              )
+          )
+          AND (
+              NULLIF(LTRIM(RTRIM(@VendedorBusqueda)), '') IS NULL
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM STRING_SPLIT(@VendedorBusqueda, N' ') AS Termino
+                  WHERE NULLIF(LTRIM(RTRIM(Termino.value)), '') IS NOT NULL
+                    AND CONCAT(T.CodigoVendedor, N' ', T.NombreVendedor, N' ', T.CorreoVendedor) NOT LIKE N'%' + LTRIM(RTRIM(Termino.value)) + N'%'
+              )
+          )
+          AND (@FechaDesdeBandeja IS NULL OR T.FechaCreacion >= @FechaDesdeBandeja)
+          AND (@FechaHastaBandeja IS NULL OR T.FechaCreacion < DATEADD(DAY, 1, @FechaHastaBandeja))
+          AND (
+              NULLIF(@BuscarBandeja, '') IS NULL
+              OR T.NumeroTicket LIKE '%' + @BuscarBandeja + '%'
+              OR T.CodigoCliente LIKE '%' + @BuscarBandeja + '%'
+              OR T.NombreCliente LIKE '%' + @BuscarBandeja + '%'
+              OR T.Titulo LIKE '%' + @BuscarBandeja + '%'
           )
         ORDER BY T.FechaCreacion DESC
         OFFSET (@Pagina - 1) * @Tamano ROWS FETCH NEXT @Tamano ROWS ONLY;
@@ -254,9 +293,9 @@ BEGIN
     -- Param3=fecha inicial (incluida), Param4=fecha final (incluida).
     IF @Option = 8
     BEGIN
-        DECLARE @FechaDesde DATE = TRY_CONVERT(DATE, NULLIF(@Param3, ''));
-        DECLARE @FechaHasta DATE = TRY_CONVERT(DATE, NULLIF(@Param4, ''));
-        IF @FechaDesde IS NOT NULL AND @FechaHasta IS NOT NULL AND @FechaDesde > @FechaHasta
+        DECLARE @FechaDesdeExportacion DATE = TRY_CONVERT(DATE, NULLIF(@Param3, ''));
+        DECLARE @FechaHastaExportacion DATE = TRY_CONVERT(DATE, NULLIF(@Param4, ''));
+        IF @FechaDesdeExportacion IS NOT NULL AND @FechaHastaExportacion IS NOT NULL AND @FechaDesdeExportacion > @FechaHastaExportacion
         BEGIN
             RAISERROR('La fecha inicial no puede ser posterior a la fecha final.', 16, 1);
             RETURN;
@@ -272,8 +311,8 @@ BEGIN
                      ORDER BY PA.IdPlanAccion DESC) P
         WHERE T.Activo=1
           AND (NULLIF(@Param1, '') IS NULL OR T.Estado=@Param1)
-          AND (@FechaDesde IS NULL OR T.FechaCreacion >= @FechaDesde)
-          AND (@FechaHasta IS NULL OR T.FechaCreacion < DATEADD(DAY, 1, @FechaHasta))
+          AND (@FechaDesdeExportacion IS NULL OR T.FechaCreacion >= @FechaDesdeExportacion)
+          AND (@FechaHastaExportacion IS NULL OR T.FechaCreacion < DATEADD(DAY, 1, @FechaHastaExportacion))
           AND (NULLIF(@Param2, '') IS NULL OR T.NumeroTicket LIKE '%' + @Param2 + '%'
             OR T.CodigoCliente LIKE '%' + @Param2 + '%' OR T.NombreCliente LIKE '%' + @Param2 + '%'
             OR T.Titulo LIKE '%' + @Param2 + '%')

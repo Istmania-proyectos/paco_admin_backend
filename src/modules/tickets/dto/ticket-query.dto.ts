@@ -30,4 +30,24 @@ export class TicketQueryDto {
   @IsString()
   @MaxLength(450)
   param5?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  cliente?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  vendedor?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  fechaDesde?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  fechaHasta?: string;
 }

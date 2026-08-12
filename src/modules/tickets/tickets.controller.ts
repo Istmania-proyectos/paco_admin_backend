@@ -60,10 +60,19 @@ export class TicketsController {
   exportTickets(
     @Query('estado') estado?: string,
     @Query('buscar') buscar?: string,
+    @Query('cliente') cliente?: string,
+    @Query('vendedor') vendedor?: string,
     @Query('fechaDesde') fechaDesde?: string,
     @Query('fechaHasta') fechaHasta?: string,
   ) {
-    return this.tickets.export(estado, buscar, fechaDesde, fechaHasta);
+    return this.tickets.export(
+      estado,
+      buscar,
+      cliente,
+      vendedor,
+      fechaDesde,
+      fechaHasta,
+    );
   }
 
   @Get('checkin/respuestas')
