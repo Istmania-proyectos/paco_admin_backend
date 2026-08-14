@@ -813,6 +813,7 @@ BEGIN
         DECLARE @SellerUsed DATETIME2(3);
         DECLARE @SellerCurrentState VARCHAR(30);
         DECLARE @SellerNewState VARCHAR(30);
+        DECLARE @SellerCreatedAt DATETIME2(3);
         DECLARE @SellerCode VARCHAR(50);
         DECLARE @SellerEmail NVARCHAR(256);
 
@@ -824,7 +825,8 @@ BEGIN
             @SellerUsed = V.FechaUso,
             @SellerCode = V.CodigoVendedor,
             @SellerEmail = V.CorreoVendedor,
-            @SellerCurrentState = T.Estado
+            @SellerCurrentState = T.Estado,
+            @SellerCreatedAt = T.FechaCreacion
         FROM dbo.tbl_Ticket_Token_Vendedor V WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN dbo.tbl_Ticket T WITH (UPDLOCK, HOLDLOCK) ON T.IdTicket = V.IdTicket
         WHERE V.TokenHash = TRY_CONVERT(VARBINARY(32), @Param1, 2);
@@ -857,6 +859,15 @@ BEGIN
         BEGIN
             ROLLBACK TRAN;
             RAISERROR('Accion de vendedor no valida.', 16, 1);
+            RETURN;
+        END
+        /* La reapertura solo se admite hasta 30 dias despues de crear el ticket.
+           La comparacion se hace dentro de la transaccion para que ningun cliente
+           pueda omitirla entre la validacion y la actualizacion. */
+        IF @Param2 = 'REABRIR' AND SYSUTCDATETIME() > DATEADD(DAY, 30, @SellerCreatedAt)
+        BEGIN
+            ROLLBACK TRAN;
+            SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
             RETURN;
         END
 
@@ -904,6 +915,7 @@ BEGIN
         DECLARE @PublicTicketId BIGINT = TRY_CONVERT(BIGINT, @Param1);
         DECLARE @PublicCurrentState VARCHAR(30);
         DECLARE @PublicNewState VARCHAR(30);
+        DECLARE @PublicCreatedAt DATETIME2(3);
         DECLARE @PublicComment NVARCHAR(2000) = @Param3;
         DECLARE @PreviousAnswers NVARCHAR(MAX);
         DECLARE @NewAnswers NVARCHAR(MAX) = N'[]';
@@ -915,7 +927,8 @@ BEGIN
         END
 
         BEGIN TRAN;
-        SELECT @PublicCurrentState = Estado
+        SELECT @PublicCurrentState = Estado,
+               @PublicCreatedAt = FechaCreacion
         FROM dbo.tbl_Ticket WITH (UPDLOCK, HOLDLOCK)
         WHERE IdTicket = @PublicTicketId AND Activo = 1;
 
@@ -931,6 +944,13 @@ BEGIN
         BEGIN
             ROLLBACK TRAN;
             SELECT 'ESTADO_INVALIDO' Resultado;
+            RETURN;
+        END
+
+        IF @Param2 = 'REABRIR' AND SYSUTCDATETIME() > DATEADD(DAY, 30, @PublicCreatedAt)
+        BEGIN
+            ROLLBACK TRAN;
+            SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
             RETURN;
         END
 

@@ -75,7 +75,8 @@ interface SellerResponseResult extends TicketTransitionResult {
     | 'USADO'
     | 'VENCIDO'
     | 'PROCESADO'
-    | 'ESTADO_INVALIDO';
+    | 'ESTADO_INVALIDO'
+    | 'REAPERTURA_FUERA_DE_PLAZO';
 }
 
 interface ExecutionSuggestedEmails {
@@ -741,6 +742,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       );
       const response = result[0];
       if (!response) throw new NotFoundException('Token inexistente.');
+      this.assertReopenWindow(response.Resultado);
       await this.notifySafely(response, ['VENDEDOR']);
       return {
         NumeroTicket: response.NumeroTicket,
@@ -763,6 +765,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException('Token inexistente.');
     }
     this.assertSellerTokenStatus(response.Resultado);
+    this.assertReopenWindow(response.Resultado);
     if (response.Estado === 'REABIERTO_URGENTE') {
       await this.notifySafely(response);
     }
@@ -804,6 +807,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         'El estado actual del ticket no permite esta acción.',
       );
     }
+    this.assertReopenWindow(response.Resultado);
     if (response.Estado === 'REABIERTO_URGENTE') {
       await this.notifySafely(response);
     }
@@ -1544,6 +1548,14 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     if (status === 'USADO' || status === 'PROCESADO') {
       throw new ConflictException(
         'El token ya fue utilizado o el ticket fue procesado.',
+      );
+    }
+  }
+
+  private assertReopenWindow(status: string) {
+    if (status === 'REAPERTURA_FUERA_DE_PLAZO') {
+      throw new ConflictException(
+        'No se puede reabrir un ticket despues de 30 dias desde su creacion.',
       );
     }
   }

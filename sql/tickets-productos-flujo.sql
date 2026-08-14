@@ -409,9 +409,11 @@ CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR @HashHex 
 AS
 BEGIN
   SET NOCOUNT ON; SET XACT_ABORT ON; BEGIN TRAN;
-  DECLARE @Token BIGINT,@Ticket BIGINT,@Uso DATETIME2(3),@Expira DATETIME2(3),@Correo NVARCHAR(256);
-  SELECT @Token=V.IdToken,@Ticket=V.IdTicket,@Uso=V.FechaUso,@Expira=V.FechaExpiracion,@Correo=V.CorreoVendedor
+  DECLARE @Token BIGINT,@Ticket BIGINT,@Uso DATETIME2(3),@Expira DATETIME2(3),@Correo NVARCHAR(256),@TicketCreatedAt DATETIME2(3);
+  SELECT @Token=V.IdToken,@Ticket=V.IdTicket,@Uso=V.FechaUso,@Expira=V.FechaExpiracion,@Correo=V.CorreoVendedor,
+    @TicketCreatedAt=T.FechaCreacion
   FROM dbo.tbl_Ticket_Token_Vendedor V WITH(UPDLOCK,HOLDLOCK)
+  JOIN dbo.tbl_Ticket T WITH(UPDLOCK,HOLDLOCK) ON T.IdTicket=V.IdTicket
   WHERE V.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
   IF @Token IS NULL OR @Uso IS NOT NULL OR @Expira<=SYSUTCDATETIME() THROW 51000,'Enlace invalido.',1;
   DECLARE @Items TABLE(
@@ -422,6 +424,13 @@ BEGIN
   SELECT IdProducto,Accion,Comentario FROM OPENJSON(@Json,'$.productos')
     WITH(IdProducto BIGINT '$.idTicketProducto',Accion VARCHAR(20) '$.accion',Comentario NVARCHAR(2000) '$.comentario');
   IF NOT EXISTS(SELECT 1 FROM @Items) THROW 51000,'Debe responder al menos un producto.',1;
+  IF EXISTS(SELECT 1 FROM @Items WHERE Accion='REABRIR')
+    AND SYSUTCDATETIME()>DATEADD(DAY,30,@TicketCreatedAt)
+  BEGIN
+    ROLLBACK;
+    SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
+    RETURN;
+  END
   /* El vendedor puede cerrar o reabrir productos en varias sesiones. */
   UPDATE I SET EstadoAnterior=P.Estado
   FROM @Items I

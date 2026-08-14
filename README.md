@@ -102,6 +102,11 @@ validación, transición, historial y consumo del token se ejecutan en una sola
 transacción SQL. Un token inexistente responde 404, uno consumido o cuyo ticket
 ya fue procesado responde 409 y uno vencido responde 410.
 
+La reapertura solo esta permitida durante los primeros 30 dias desde
+`FechaCreacion` del ticket. La regla se valida dentro de los procedimientos SQL,
+por lo que aplica a enlaces con token, a la integracion sin token y al flujo por
+producto.
+
 La integración externa también puede usar
 `POST /api/Tickets/respuesta-vendedor/sin-token/:id`. Para `REABRIR` debe enviar
 `respuestasNuevas`; cada elemento se relaciona por `IdTicketDetalle`,

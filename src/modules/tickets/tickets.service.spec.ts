@@ -25,6 +25,34 @@ describe('TicketsService automation', () => {
     return { service, database, mailer };
   }
 
+  it.each([
+    ['con token', (service: TicketsService) =>
+      service.respondAsSeller({ token: 'a'.repeat(40), accion: 'REABRIR' })],
+    ['sin token', (service: TicketsService) =>
+      service.respondWithoutToken('12', {
+        accion: 'REABRIR',
+        respuestasNuevas: [
+          {
+            IdTicketDetalle: 1,
+            IdDetalleOrigen: 1,
+            IdPreguntaOrigen: 49,
+            Valor: '2',
+          },
+        ],
+      })],
+    ['por producto', (service: TicketsService) =>
+      service.respondAsSeller({
+        token: 'a'.repeat(40),
+        productos: [{ idTicketProducto: 1, accion: 'REABRIR' }],
+      })],
+  ])('rechaza la reapertura fuera de plazo %s', async (_path, respond) => {
+    const { service } = setup([{ Resultado: 'REAPERTURA_FUERA_DE_PLAZO' }]);
+
+    await expect(respond(service)).rejects.toThrow(
+      'No se puede reabrir un ticket despues de 30 dias desde su creacion.',
+    );
+  });
+
   it('simula la importacion sin notificar', async () => {
     const rows = [
       {
