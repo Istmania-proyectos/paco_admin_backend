@@ -676,6 +676,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
 
     const roles = this.parseRoles(user.roles);
     if (
+      !roles.includes('SUPERUSUARIO') &&
       !roles.includes(action.role) &&
       !(action.stage === 'EJECUCION' && roles.includes('TICKET_JEFE_MARCA'))
     ) {

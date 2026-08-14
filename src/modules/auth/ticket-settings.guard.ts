@@ -23,7 +23,7 @@ export class TicketSettingsGuard implements CanActivate {
       .trim()
       .toLowerCase();
     const roles = this.readRoles(user?.roles);
-    if (roles.includes('ADMIN') || email === manager) return true;
+    if (roles.includes('ADMIN') || roles.includes('SUPERUSUARIO') || email === manager) return true;
     throw new ForbiddenException(
       'No tiene permiso para administrar correos relacionados.',
     );

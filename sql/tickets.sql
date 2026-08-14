@@ -39,6 +39,21 @@ BEGIN
 END
 GO
 
+IF NOT EXISTS (
+    SELECT 1 FROM dbo.AspNetRoles
+    WHERE NormalizedName = N'TICKET_SOLO_LECTURA'
+)
+BEGIN
+    INSERT dbo.AspNetRoles (Id, Name, NormalizedName, ConcurrencyStamp)
+    VALUES (
+        N'TICKET-ROL-SOLO-LECTURA',
+        N'TICKET_SOLO_LECTURA',
+        N'TICKET_SOLO_LECTURA',
+        CONVERT(NVARCHAR(36), NEWID())
+    );
+END
+GO
+
 /* Lectura de formularios CheckIn para importar tickets globales. Cada grupo
    (formulario, respuesta) se convierte en un ticket; sus preguntas en detalle. */
 CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET_CHECKIN @Formulario INT = 14

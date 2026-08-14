@@ -22,7 +22,7 @@ export class MasterDataGuard implements CanActivate {
 
     if (
       !roles.some((role) =>
-        ['ADMIN', 'MASTER_DATA'].includes(role.toUpperCase()),
+        ['ADMIN', 'MASTER_DATA', 'SUPERUSUARIO'].includes(role.toUpperCase()),
       )
     ) {
       throw new ForbiddenException(

@@ -16,6 +16,7 @@ import { Request } from 'express';
 import { ApiUserGuard } from '../auth/api-user.guard';
 import { AdminGuard } from '../auth/admin.guard';
 import { TicketSettingsGuard } from '../auth/ticket-settings.guard';
+import { TicketWriteGuard } from '../auth/ticket-write.guard';
 import { JwtPayload } from '../auth/jwt.strategy';
 import { CreateTicketDto } from './dto/create-ticket.dto';
 import {
@@ -153,6 +154,7 @@ export class TicketsController {
   }
 
   @Post('demo/iniciar')
+  @UseGuards(TicketWriteGuard)
   startDemo(
     @Body() dto: StartTicketDemoDto,
     @Req() request: AuthenticatedRequest,
@@ -161,6 +163,7 @@ export class TicketsController {
   }
 
   @Post('demo/limpiar')
+  @UseGuards(TicketWriteGuard)
   clearDemo(
     @Body() dto: StartTicketDemoDto,
     @Req() request: AuthenticatedRequest,
@@ -169,6 +172,7 @@ export class TicketsController {
   }
 
   @Post()
+  @UseGuards(TicketWriteGuard)
   createTicket(
     @Body() dto: CreateTicketDto,
     @Req() request: AuthenticatedRequest,
@@ -177,6 +181,7 @@ export class TicketsController {
   }
 
   @Post(':id/transiciones')
+  @UseGuards(TicketWriteGuard)
   transition(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: TicketActionDto,
@@ -186,6 +191,7 @@ export class TicketsController {
   }
 
   @Post(':id/productos/transiciones')
+  @UseGuards(TicketWriteGuard)
   transitionProducts(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: TicketProductActionDto,
@@ -200,6 +206,7 @@ export class TicketsController {
   }
 
   @Post(':id/reenviar-notificacion')
+  @UseGuards(TicketWriteGuard)
   resendNotification(@Param('id', ParseIntPipe) id: number) {
     return this.tickets.resendNotification(String(id));
   }

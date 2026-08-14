@@ -10,6 +10,7 @@ import { AuthService } from './auth.service';
 import { IdentityService } from './identity.service';
 import { JwtStrategy } from './jwt.strategy';
 import { MasterDataGuard } from './master-data.guard';
+import { SuperUserGuard } from './super-user.guard';
 
 @Global()
 @Module({
@@ -40,6 +41,7 @@ import { MasterDataGuard } from './master-data.guard';
     ApiUserGuard,
     AdminGuard,
     MasterDataGuard,
+    SuperUserGuard,
   ],
   exports: [
     IdentityService,
@@ -47,6 +49,7 @@ import { MasterDataGuard } from './master-data.guard';
     ApiUserGuard,
     AdminGuard,
     MasterDataGuard,
+    SuperUserGuard,
     JwtModule,
   ],
 })

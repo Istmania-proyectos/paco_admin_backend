@@ -20,7 +20,12 @@ export class AdminGuard implements CanActivate {
       roles = (rawRoles ?? '').split(',').map((role) => role.trim());
     }
 
-    if (!roles.some((role) => role.toUpperCase() === 'ADMIN')) {
+    if (
+      !roles.some((role) => {
+        const normalized = role.toUpperCase();
+        return normalized === 'ADMIN' || normalized === 'SUPERUSUARIO';
+      })
+    ) {
       throw new ForbiddenException(
         'Esta operación es exclusiva del administrador',
       );

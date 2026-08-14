@@ -30,6 +30,24 @@ export class AccountsService {
     return this.identity.updateManagedUser(userId, model);
   }
 
+  listUsers() {
+    return this.identity.listManagedUsers();
+  }
+
+  listAssignableRoles() {
+    return this.identity.listAssignableRoles();
+  }
+
+  async resetManagedUserPassword(userId: string, model: ResetPasswordDto) {
+    const success = await this.identity.updatePasswordById(userId, model.Password);
+    if (!success) throw new BadRequestException('Usuario no encontrado');
+    return { success: true, msg: 'Contrasena restablecida', error: '' };
+  }
+
+  deactivateUser(userId: string, actorId: string) {
+    return this.identity.deactivateManagedUser(userId, actorId);
+  }
+
   async resetPassword(userId: string, model: ResetPasswordDto) {
     const success = await this.identity.updatePasswordById(
       userId,
