@@ -9,6 +9,8 @@ import { PunteoModule } from './modules/punteo/punteo.module';
 import { TicketsModule } from './modules/tickets/tickets.module';
 import { TicketsVencimientoModule } from './modules/tickets-vencimiento/tickets-vencimiento.module';
 import { MasterDataModule } from './modules/master-data/master-data.module';
+import { LibroRutaModule } from './modules/libro-ruta/libro-ruta.module';
+import { NotificacionesModule } from './modules/notificaciones/notificaciones.module';
 
 @Module({
   imports: [
@@ -17,6 +19,7 @@ import { MasterDataModule } from './modules/master-data/master-data.module';
       envFilePath: ['.env.local', '.env'],
     }),
     DatabaseModule,
+    NotificacionesModule,
     AuthModule,
     AccountsModule,
     PacoModule,
@@ -25,6 +28,7 @@ import { MasterDataModule } from './modules/master-data/master-data.module';
     TicketsModule,
     TicketsVencimientoModule,
     MasterDataModule,
+    LibroRutaModule,
   ],
 })
 export class AppModule {}
