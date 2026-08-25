@@ -31,6 +31,36 @@ export class PacoService {
     });
   }
 
+  getUnassignedBrands(userId: string) {
+    return this.database.executeProcedure('PACO_GET_MARCAS_SIN_RESPONSABLE', {
+      UserId: userId,
+    });
+  }
+
+  async respondBrandAssignment(
+    userId: string,
+    brand: string,
+    accept: boolean,
+  ) {
+    const rows = await this.database.executeProcedure<{
+      Marca: string;
+      Asignada: boolean;
+      Mensaje: string;
+    }>('PACO_RESPONDER_MARCA', {
+      UserId: userId,
+      Marca: brand.trim(),
+      Aceptar: accept ? '1' : '0',
+    });
+
+    return (
+      rows[0] ?? {
+        Marca: brand.trim(),
+        Asignada: false,
+        Mensaje: 'Respuesta registrada.',
+      }
+    );
+  }
+
   async sendMail(params: PacoParams) {
     const messages = await this.execute<{
       correo: string;
