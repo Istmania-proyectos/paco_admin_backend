@@ -384,6 +384,9 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getDemoStatus() {
+    const redirectEmail = this.config
+      .get<string>('TICKETS_NOTIFICATION_REDIRECT_EMAIL')
+      ?.trim();
     const rows = await this.database.query<{
       TicketsDemo: number;
       CorreoDemo: string | null;
@@ -395,9 +398,10 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       WHERE EsDemo = 1
     `);
     return {
-      activo: Number(rows[0]?.TicketsDemo ?? 0) > 0,
+      activo: Boolean(redirectEmail) || Number(rows[0]?.TicketsDemo ?? 0) > 0,
       ticketsDemo: Number(rows[0]?.TicketsDemo ?? 0),
       correoDemo:
+        redirectEmail ??
         rows[0]?.CorreoDemo ??
         this.config.get<string>('TICKETS_DEMO_EMAIL') ??
         '',
@@ -1063,13 +1067,13 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     if (!cc.length) return;
 
     try {
+      const delivery = await this.resolveDelivery(ticket.IdTicket, cc.join(', '));
       await this.mailer.send({
-        to: cc[0],
-        cc: cc.slice(1),
-        subject: `Ticket ${ticket.NumeroTicket}: inicio de ejecución`,
+        to: delivery.to,
+        subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${ticket.NumeroTicket}: inicio de ejecución`,
         html: `<p>Se inició la ejecución del ticket <strong>${this.escape(
           ticket.NumeroTicket,
-        )}</strong>.</p>${await this.flowSummary(ticket.IdTicket)}`,
+        )}</strong>.</p>${this.demoBanner(delivery, 'EJECUCION')}${await this.flowSummary(ticket.IdTicket)}`,
       });
     } catch (error) {
       this.logger.error(
@@ -1600,6 +1604,12 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     idTicket: string | number,
     intendedTo: string,
   ): Promise<TicketDelivery> {
+    const redirectEmail = this.config
+      .get<string>('TICKETS_NOTIFICATION_REDIRECT_EMAIL')
+      ?.trim();
+    if (redirectEmail) {
+      return { to: redirectEmail, intendedTo, isDemo: true };
+    }
     const rows = await this.database.query<{
       EsDemo: boolean | number;
       CorreoDemo: string | null;
