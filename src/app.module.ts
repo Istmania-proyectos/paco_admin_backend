@@ -11,6 +11,7 @@ import { TicketsVencimientoModule } from './modules/tickets-vencimiento/tickets-
 import { MasterDataModule } from './modules/master-data/master-data.module';
 import { LibroRutaModule } from './modules/libro-ruta/libro-ruta.module';
 import { NotificacionesModule } from './modules/notificaciones/notificaciones.module';
+import { PagosS4hanaModule } from './modules/pagos-s4hana/pagos-s4hana.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { NotificacionesModule } from './modules/notificaciones/notificaciones.mo
     TicketsVencimientoModule,
     MasterDataModule,
     LibroRutaModule,
+    PagosS4hanaModule,
   ],
 })
 export class AppModule {}

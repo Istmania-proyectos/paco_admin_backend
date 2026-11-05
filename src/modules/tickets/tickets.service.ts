@@ -1,4 +1,9 @@
 import {
+  serializeTicketAction,
+  ticketActionLabel,
+} from './ticket-action.utils';
+import { executionEmails } from './execution-emails';
+import {
   BadRequestException,
   ConflictException,
   GoneException,
@@ -80,6 +85,9 @@ interface SellerResponseResult extends TicketTransitionResult {
 }
 
 interface ExecutionSuggestedEmails {
+  codigoVendedor?: string | null;
+  tipoAccion?: string | null;
+  correoJefeMarca?: string | null;
   correoVendedor?: string | null;
   correoSupervisor?: string | null;
 }
@@ -104,7 +112,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
         this.config.get('TICKETS_AUTOMATION_INTERVAL_MINUTES') ?? 60,
       );
       const intervalMinutes = Math.max(
-        5,
+        1,
         Number.isFinite(configuredMinutes) ? configuredMinutes : 60,
       );
       this.automationTimer = setInterval(
@@ -254,11 +262,16 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     };
   }
 
-  getProducts(id: string) {
-    return this.database.executeProcedure('PACO_TICKET_PRODUCTOS_GET', {
-      IdTicket: id,
-      Etapa: '',
-    });
+  async getProducts(id: string) {
+    const products = await this.database.executeProcedure<any>(
+      'PACO_TICKET_PRODUCTOS_GET',
+      {
+        IdTicket: id,
+        Etapa: '',
+      },
+    );
+    const reasons = await this.getReopenReasons(id);
+    return this.withReopenReasons(products, reasons);
   }
 
   async create(dto: CreateTicketDto, user: JwtPayload) {
@@ -616,12 +629,13 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async transition(id: string, dto: TicketActionDto, user: JwtPayload) {
+    this.assertApprovalComment(dto.accion, dto.comentario);
     const result = await this.database.executeProcedure<TicketTransitionResult>(
       'PACO_INSERT_TICKET',
       {
         Option: '2',
         Param1: id,
-        Param2: JSON.stringify(dto),
+        Param2: serializeTicketAction(dto),
         Param3: user.id,
         Param4: user.sub ?? '',
         Param5: user.roles ?? '',
@@ -643,6 +657,9 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     dto: TicketProductActionDto,
     user: JwtPayload,
   ) {
+    for (const product of dto.productos) {
+      this.assertApprovalComment(dto.accion, product.comentario);
+    }
     const action = {
       PROPONER_PLAN: {
         stage: 'JEFE_MARCA',
@@ -705,7 +722,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       'PACO_TICKET_PRODUCTOS_RESPONDER_APROBACION',
       {
         HashHex: this.hashToken(token),
-        Json: JSON.stringify({
+        Json: serializeTicketAction({
           productos: dto.productos.map((product) => ({
             ...product,
             decision: action.decision,
@@ -715,6 +732,9 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     );
     const result = rows[0];
     if (!result) throw new NotFoundException('Ticket inexistente.');
+    if (dto.accion === 'INICIAR_EJECUCION') {
+      await this.sendExecutionCopies(result, dto.correosCc);
+    }
     await this.notifySafely(result, [action.stage]);
     return result;
   }
@@ -733,10 +753,22 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       'PACO_TICKET_PRODUCTOS_GET',
       { IdTicket: String(ticket.IdTicket), Etapa: 'VENDEDOR' },
     );
-    return { ...response, Productos: productos };
+    const MotivoSolicitud = await this.getRequestReason(ticket.IdTicket);
+    return { ...response, Productos: productos, MotivoSolicitud };
+  }
+
+  private assertReopenReason(accion?: string, comentario?: string): void {
+    if (accion === 'REABRIR' && !comentario?.trim()) {
+      throw new BadRequestException(
+        'Debe indicar el motivo de la solicitud de reapertura.',
+      );
+    }
   }
 
   async respondAsSeller(dto: SellerTicketResponseDto) {
+    for (const response of dto.productos?.length ? dto.productos : [dto]) {
+      this.assertReopenReason(response.accion, response.comentario);
+    }
     if (dto.productos?.length) {
       const result = await this.database.executeProcedure<SellerResponseResult>(
         'PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR',
@@ -781,6 +813,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async respondWithoutToken(id: string, dto: VendorTicketActionDto) {
+    this.assertReopenReason(dto.accion, dto.comentario);
     if (dto.IdTicket !== undefined && String(dto.IdTicket) !== id) {
       throw new ConflictException(
         'El IdTicket del cuerpo no coincide con el ticket de la ruta.',
@@ -849,55 +882,167 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     const item = rows[0];
     if (!item) throw new NotFoundException('Enlace inexistente.');
     this.assertSellerTokenStatus(item.TokenEstado);
-    const [productos, correosCcSugeridos] = await Promise.all([
-      this.database.executeProcedure<any>('PACO_TICKET_PRODUCTOS_GET', {
-        IdTicket: String(item.IdTicket),
-        Etapa: item.Etapa,
-      }),
-      item.Etapa === 'EJECUCION'
-        ? this.getExecutionSuggestedEmails(item.IdTicket)
-        : Promise.resolve([]),
-    ]);
-    return { ...item, Productos: productos, correosCcSugeridos };
+    const [productos, correosCcSugeridos, MotivoSolicitud, reaperturas] =
+      await Promise.all([
+        this.database.executeProcedure<any>('PACO_TICKET_PRODUCTOS_GET', {
+          IdTicket: String(item.IdTicket),
+          Etapa: item.Etapa,
+        }),
+        item.Etapa === 'EJECUCION'
+          ? this.getExecutionSuggestedEmails(item.IdTicket)
+          : Promise.resolve([]),
+        this.getRequestReason(item.IdTicket),
+        this.getReopenReasons(item.IdTicket),
+      ]);
+    return {
+      ...item,
+      Productos: this.withReopenReasons(productos, reaperturas),
+      correosCcSugeridos,
+      MotivoSolicitud,
+      MotivoReapertura:
+        reaperturas
+          .find((row) => row.IdTicketProducto == null)
+          ?.Comentario?.trim() ?? '',
+    };
+  }
+
+  private async getRequestReason(ticketId: string | number): Promise<string> {
+    const rows = await this.database.query<{ Valor?: string }>(
+      `SELECT Valor FROM dbo.tbl_Ticket_Detalle
+       WHERE IdTicket = @ticketId
+         AND (IdPreguntaOrigen = 1391
+           OR Pregunta COLLATE Latin1_General_CI_AI LIKE N'%motivo%solicitud%')
+       ORDER BY IdDetalleOrigen, IdTicketDetalle`,
+      { ticketId },
+    );
+    return [
+      ...new Set(rows.map((row) => row.Valor?.trim()).filter(Boolean)),
+    ].join('\n');
+  }
+
+  private async getReopenReasons(ticketId: string | number): Promise<any[]> {
+    return this.database.query<any>(
+      `WITH Reaperturas AS (
+         SELECT IdTicketProducto, Comentario,
+           ROW_NUMBER() OVER (PARTITION BY IdTicketProducto ORDER BY IdHistorial DESC) AS Posicion
+         FROM dbo.tbl_Ticket_Historial
+         WHERE IdTicket = @ticketId AND Accion = 'REABRIR'
+       )
+       SELECT IdTicketProducto, Comentario FROM Reaperturas WHERE Posicion = 1`,
+      { ticketId },
+    );
+  }
+
+  private withReopenReasons(products: any[], reasons: any[]) {
+    return products.map((product) => ({
+      ...product,
+      MotivoReapertura:
+        reasons
+          .find(
+            (row) =>
+              row.IdTicketProducto != null &&
+              String(row.IdTicketProducto) === String(product.IdTicketProducto),
+          )
+          ?.Comentario?.trim() ?? '',
+    }));
+  }
+
+  private assertApprovalComment(decision?: string, comentario?: string): void {
+    if (
+      [
+        'PROPONER_PLAN',
+        'APROBAR',
+        'RECHAZAR',
+        'RECHAZAR_CERRAR_POLITICA',
+        'APROBAR_MERCADEO',
+        'RECHAZAR_MERCADEO',
+        'APROBAR_GERENCIA',
+        'RECHAZAR_GERENCIA',
+      ].includes(decision ?? '') &&
+      !comentario?.trim()
+    ) {
+      throw new BadRequestException(
+        'Debe indicar un comentario para registrar el plan o la decisión de aprobación/rechazo.',
+      );
+    }
   }
 
   /**
    * Correos que se muestran inicialmente al iniciar la ejecución. No se
    * persisten ni se fuerzan: el usuario puede eliminarlos antes de enviar.
    */
-  private async getExecutionSuggestedEmails(
+  async getExecutionSuggestedEmails(
     ticketId: string | number,
+    productIds?: number[],
   ): Promise<string[]> {
     const rows = await this.database.query<ExecutionSuggestedEmails>(
       `SELECT
+         T.CodigoVendedor AS codigoVendedor,
+         PA.TipoAccion AS tipoAccion,
+         T.CorreoJefeMarca AS correoJefeMarca,
          T.CorreoVendedor AS correoVendedor,
          SG.email_supervisor AS correoSupervisor
        FROM dbo.tbl_Ticket T
        LEFT JOIN dbo.tbl_Supervisor_Gerente SG
          ON SG.codigo_vendedor = T.CodigoVendedor
+       OUTER APPLY (
+         SELECT A.TipoAccion
+         FROM dbo.tbl_Ticket_Producto P
+         CROSS APPLY (
+           SELECT TOP (1) X.TipoAccion FROM dbo.tbl_Ticket_Plan_Accion X
+           WHERE X.IdTicketProducto = P.IdTicketProducto
+           ORDER BY X.IdPlanAccion DESC
+         ) A
+         WHERE P.IdTicket = T.IdTicket AND P.Estado = 'PLAN_APROBADO'
+           AND (@productIds IS NULL OR P.IdTicketProducto IN (
+             SELECT TRY_CONVERT(BIGINT, value) FROM OPENJSON(@productIds)
+           ))
+         UNION ALL
+         SELECT A.TipoAccion
+         FROM (
+           SELECT TOP (1) X.TipoAccion FROM dbo.tbl_Ticket_Plan_Accion X
+           WHERE X.IdTicket = T.IdTicket AND X.IdTicketProducto IS NULL
+           ORDER BY X.IdPlanAccion DESC
+         ) A
+         WHERE NOT EXISTS (SELECT 1 FROM dbo.tbl_Ticket_Producto P WHERE P.IdTicket = T.IdTicket)
+       ) PA
        WHERE T.IdTicket = @ticketId`,
-      { ticketId },
+      {
+        ticketId,
+        productIds: productIds?.length ? JSON.stringify(productIds) : null,
+      },
     );
     const emails = rows[0];
     if (!emails) return [];
 
-    return [emails.correoVendedor, emails.correoSupervisor].reduce<string[]>(
-      (suggested, email) => {
-        const normalized = email?.trim().toLowerCase();
-        if (normalized && !suggested.includes(normalized)) {
-          suggested.push(normalized);
-        }
-        return suggested;
-      },
-      [],
-    );
+    return [
+      ...rows.flatMap((row) => [row.correoVendedor, row.correoSupervisor]),
+      ...rows
+        .filter((row) =>
+          ['PROMOCION', 'DESCUENTO'].includes(row.tipoAccion ?? ''),
+        )
+        .map((row) => row.correoJefeMarca),
+      ...executionEmails(
+        emails.codigoVendedor,
+        rows.flatMap((row) => (row.tipoAccion ? [row.tipoAccion] : [])),
+      ),
+    ].reduce<string[]>((suggested, email) => {
+      const normalized = email?.trim().toLowerCase();
+      if (normalized && !suggested.includes(normalized)) {
+        suggested.push(normalized);
+      }
+      return suggested;
+    }, []);
   }
   async respondApproval(dto: ApprovalTicketResponseDto) {
+    for (const response of dto.productos?.length ? dto.productos : [dto]) {
+      this.assertApprovalComment(response.decision, response.comentario);
+    }
     const { token, ...body } = dto;
     if (body.productos?.length) {
       const rows = await this.database.executeProcedure<any>(
         'PACO_TICKET_PRODUCTOS_RESPONDER_APROBACION',
-        { HashHex: this.hashToken(token), Json: JSON.stringify(body) },
+        { HashHex: this.hashToken(token), Json: serializeTicketAction(body) },
       );
       const result = rows[0];
       if (result) {
@@ -924,7 +1069,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     }
     const rows = await this.database.executeProcedure<any>(
       'PACO_TICKET_RESPONDER_APROBACION',
-      { HashHex: this.hashToken(token), Json: JSON.stringify(body) },
+      { HashHex: this.hashToken(token), Json: serializeTicketAction(body) },
     );
     const result = rows[0];
     if (result) {
@@ -1009,7 +1154,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
             )}</p>${
               product.PlanAccion
                 ? `<p><strong>Plan que estaba en evaluación:</strong> ${this.escape(
-                    product.TipoAccion,
+                    ticketActionLabel(product.TipoAccion),
                   )} — ${this.escape(product.PlanAccion)}</p>`
                 : ''
             }</div>`,
@@ -1067,13 +1212,21 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     if (!cc.length) return;
 
     try {
-      const delivery = await this.resolveDelivery(ticket.IdTicket, cc.join(', '));
+      const delivery = await this.resolveDelivery(
+        ticket.IdTicket,
+        cc.join(', '),
+      );
       await this.mailer.send({
         to: delivery.to,
-        subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${ticket.NumeroTicket}: inicio de ejecución`,
+        subject: `${delivery.isDemo ? '[DEMO] ' : ''}Ticket ${
+          ticket.NumeroTicket
+        }: inicio de ejecución`,
         html: `<p>Se inició la ejecución del ticket <strong>${this.escape(
           ticket.NumeroTicket,
-        )}</strong>.</p>${this.demoBanner(delivery, 'EJECUCION')}${await this.flowSummary(ticket.IdTicket)}`,
+        )}</strong>.</p>${this.demoBanner(
+          delivery,
+          'EJECUCION',
+        )}${await this.flowSummary(ticket.IdTicket)}`,
       });
     } catch (error) {
       this.logger.error(
@@ -1506,7 +1659,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       : '';
     return [
       `<p>Hola ${this.escape(recipient.Nombre || 'Vendedor')},</p>`,
-      '<p>Su rol en este ticket es: <strong>Vendedor / Reportante</strong>.</p>',
+      '<p>Su rol en este ticket es: <strong>Vendedor responsable del cliente</strong>.</p>',
       '<p>El plan de acción fue ejecutado. Confirme si la solución fue satisfactoria o si el ticket debe reabrirse.</p>',
       `<p><strong>Ticket:</strong> ${this.escape(recipient.NumeroTicket)}<br>`,
       `<strong>Cliente:</strong> ${this.escape(recipient.NombreCliente)}<br>`,
@@ -1594,8 +1747,8 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
       EJECUCION: 'Responsable de ejecución',
       TICKET_SUPERVISOR: 'Supervisor de Ventas',
       RESPONSABLE: 'Responsable de ejecución',
-      VENDEDOR: 'Vendedor / Reportante',
-      VENDEDOR_EXTERNO: 'Vendedor / Reportante',
+      VENDEDOR: 'Vendedor responsable del cliente',
+      VENDEDOR_EXTERNO: 'Vendedor responsable del cliente',
     };
     return labels[role ?? ''] ?? role ?? 'Participante del flujo';
   }
@@ -1685,7 +1838,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     )}</td></tr></table></div>`;
     const planHtml = plan
       ? `<div style="border:2px solid #6f42c1;border-radius:12px;padding:16px;margin:18px 0;background:#faf7ff"><h3 style="margin:0 0 10px;color:#51258a">Plan de acción vigente</h3><p><strong>Motivo:</strong> ${this.escape(
-          plan.TipoAccion,
+          ticketActionLabel(plan.TipoAccion),
         )}<br><strong>Estado:</strong> ${this.escape(
           plan.Estado,
         )}<br><strong>Plan:</strong> ${this.escape(
@@ -1715,7 +1868,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
               )}</small>${
                 product.PlanAccion
                   ? `<p><strong>${this.escape(
-                      product.TipoAccion,
+                      ticketActionLabel(product.TipoAccion),
                     )}:</strong> ${this.escape(
                       product.PlanAccion,
                     )}<br><small>Responsable: ${this.escape(

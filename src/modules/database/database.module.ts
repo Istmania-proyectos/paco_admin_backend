@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { legacyEntities } from './entities/legacy.entities';
 import { DatabaseService } from './database.service';
+import { S4HanaDatabaseService } from './s4hana-database.service';
 
 @Global()
 @Module({
@@ -16,6 +17,7 @@ import { DatabaseService } from './database.service';
         username: config.get<string>('DB_USER'),
         password: config.get<string>('DB_PASSWORD'),
         database: config.get<string>('DB_NAME'),
+        requestTimeout: Number(config.get('DB_REQUEST_TIMEOUT_MS') ?? 15000),
         entities: legacyEntities,
         synchronize: false,
         options: {
@@ -28,7 +30,7 @@ import { DatabaseService } from './database.service';
     }),
     TypeOrmModule.forFeature(legacyEntities),
   ],
-  providers: [DatabaseService],
-  exports: [DatabaseService, TypeOrmModule],
+  providers: [DatabaseService, S4HanaDatabaseService],
+  exports: [DatabaseService, S4HanaDatabaseService, TypeOrmModule],
 })
 export class DatabaseModule {}

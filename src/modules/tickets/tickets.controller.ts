@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseArrayPipe,
   Patch,
   ParseIntPipe,
   Post,
@@ -203,6 +204,18 @@ export class TicketsController {
   @Get(':id/productos')
   getProducts(@Param('id', ParseIntPipe) id: number) {
     return this.tickets.getProducts(String(id));
+  }
+
+  @Get(':id/correos-ejecucion')
+  getExecutionSuggestedEmails(
+    @Param('id', ParseIntPipe) id: number,
+    @Query(
+      'productos',
+      new ParseArrayPipe({ items: Number, separator: ',', optional: true }),
+    )
+    productIds?: number[],
+  ) {
+    return this.tickets.getExecutionSuggestedEmails(id, productIds);
   }
 
   @Post(':id/reenviar-notificacion')

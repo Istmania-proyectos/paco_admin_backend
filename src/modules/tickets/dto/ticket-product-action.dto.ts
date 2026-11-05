@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsEmail,
   IsIn,
   IsInt,
   IsOptional,
@@ -54,6 +55,12 @@ export class TicketProductActionItemDto {
 
 /** Acción parcial desde la bandeja autenticada; no invalida el enlace de correo. */
 export class TicketProductActionDto {
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsEmail({}, { each: true })
+  correosCc?: string[];
+
   @IsIn([
     'PROPONER_PLAN',
     'APROBAR_MERCADEO',

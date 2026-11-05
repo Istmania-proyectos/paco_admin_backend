@@ -12,12 +12,16 @@ export type ProcedureParams = Record<string, unknown>;
 export class DatabaseService implements OnApplicationShutdown {
   private poolPromise?: Promise<sql.ConnectionPool>;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(protected readonly config: ConfigService) {}
+
+  protected getDatabaseName(): string | undefined {
+    return this.config.get<string>('DB_NAME');
+  }
 
   private getPool(): Promise<sql.ConnectionPool> {
     if (!this.poolPromise) {
       const server = this.config.get<string>('DB_HOST');
-      const database = this.config.get<string>('DB_NAME');
+      const database = this.getDatabaseName();
       const user = this.config.get<string>('DB_USER');
       const password = this.config.get<string>('DB_PASSWORD');
 
@@ -33,6 +37,7 @@ export class DatabaseService implements OnApplicationShutdown {
         user,
         password,
         port: Number(this.config.get('DB_PORT') ?? 1433),
+        requestTimeout: Number(this.config.get('DB_REQUEST_TIMEOUT_MS') ?? 15000),
         options: {
           encrypt: this.config.get('DB_ENCRYPT') === 'true',
           trustServerCertificate:

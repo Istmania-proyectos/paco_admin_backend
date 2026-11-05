@@ -22,6 +22,16 @@ compara con las asignaciones activas de `dbo.tbl_Casa_Usuario`.
 El campo mostrado como `Cliente` es `codigo - descripcion`; el código también
 se conserva por separado.
 
+Si un ticket muestra artículos de otros formularios, ejecutar
+`sql/tickets.automatizacion-checkin.diagnostico.sql` indicando su número.
+El resultado permite comparar la dependencia de cada respuesta con la del
+ticket. El bloque de inserción de detalles debe filtrar tanto la dependencia
+actual como el jefe de marca; filtrar solo el jefe mezcla grupos distintos.
+La corrección se instala ejecutando `sql/tickets.automatizacion-checkin.sql`
+en la base correspondiente. No elimina los detalles o productos ya copiados:
+estos requieren revisión antes de cualquier reparación. La regresión SQL está
+en `sql/tickets.automatizacion-checkin.pruebas.sql` y solo usa tablas temporales.
+
 ## Instalación SQL
 
 Ejecutar, en orden y sobre la base de pruebas:
@@ -36,6 +46,15 @@ antes de ejecutar.
 
 ## Simulación
 
+Si aparece `Timeout: Request failed to complete in 15000ms`, configurar
+`DB_REQUEST_TIMEOUT_MS=120000` en el `.env` del backend, recompilar y reiniciar
+el servicio. El valor está en milisegundos y aplica a las consultas SQL del
+backend; si no se define, se conserva el límite de 15000 ms. Aumentarlo permite
+consultas más largas, pero no resuelve bloqueos ni consultas lentas en CheckIn.
+Para medir la importación sin crear tickets, ejecutar primero el procedimiento
+`dbo.PACO_TICKET_AUTOMATIZAR_CHECKIN` con `@Formulario=14, @Ejecutar=0` desde
+SQL Server Management Studio sobre la base de PACO Admin.
+
 Los endpoints requieren JWT y rol `ADMIN`.
 
 ```http
@@ -49,7 +68,48 @@ correo. Devuelven los destinatarios hipotéticos por separado:
 - `CorreoJefeMarca`, resuelto por Casa/Marca.
 - `CorreoMercadeo`, estático.
 - `CorreoGerenciaGeneral`, estático.
-- `CorreoVendedor`, tomado del usuario que respondió en CheckIn.
+- `CorreoVendedor`, tomado del vendedor asignado al cliente en SAP.
+
+El responsable se resuelve con `R.cliente = APP_CLIENTES_S4.CardCode` en
+`PACO_S4HANA`, y `SlpCode = tbl_Vendedor.id_sap_vendedor` en PACO Admin.
+`SlpCode` es alfanumerico (por ejemplo `S07`). Se guardan el
+`codigo_vendedor`, `nombre_vendedor` y `email` del maestro habitual. El
+supervisor se sigue resolviendo en `tbl_Supervisor_Gerente` usando ese
+`codigo_vendedor`. `R.usuario` conserva quien envio el formulario; no define
+al responsable ni el destinatario del enlace de cierre/reapertura.
+
+Las filas repetidas de un mismo `CardCode/SlpCode` se deduplican. Un grupo
+sin vendedor, con varios vendedores, sin maestro o sin correo no se importa;
+la simulacion devuelve `SIN_VENDEDOR_CLIENTE`, `VENDEDOR_AMBIGUO`,
+`SIN_VENDEDOR_MAESTRO` o `VENDEDOR_SIN_CORREO`. Si una dependencia contiene
+varios clientes devuelve `CLIENTE_AMBIGUO`.
+
+### Correccion de tickets ya importados
+
+Reinstalar `sql/tickets.automatizacion-checkin.sql` para las importaciones
+nuevas. Ejecutar `sql/tickets.checkin-vendedor.pruebas.sql` para verificar la
+resolucion con tablas temporales. Luego instalar
+`sql/tickets.checkin-vendedor-reparacion.sql` y revisar primero:
+
+```sql
+EXEC dbo.PACO_TICKET_CHECKIN_REASIGNAR_VENDEDOR @Ejecutar=0;
+-- Aplicar solamente un ticket revisado:
+EXEC dbo.PACO_TICKET_CHECKIN_REASIGNAR_VENDEDOR @Ejecutar=1, @IdTicket=123;
+```
+
+`sql/tickets.checkin-vendedor-reparacion.pruebas.sql` verifica con tablas
+temporales que la simulacion no escribe, la correccion invalida los enlaces
+anteriores, conserva el estado y es idempotente.
+
+La reparacion cubre tickets activos de CheckIn del formulario 14, incluso si
+el formulario ya esta marcado como migrado. Excluye demos, deja historial,
+mantiene el estado del ticket e invalida los enlaces anteriores sin usar si
+cambia el codigo o correo del vendedor. Los casos sin asignacion valida
+quedan sin modificar y se muestran en el resultado. La reparacion no envia
+correos: para tickets pendientes de cierre, reenviar la notificacion desde la
+bandeja (`POST /api/Tickets/{id}/reenviar-notificacion`) para emitir el enlace
+al vendedor correcto. Compilar/publicar el backend para actualizar tambien
+la etiqueta del correo a "Vendedor responsable del cliente".
 
 `ContactosHipoteticos` presenta los cuatro roles en una sola cadena para
 facilitar la revisión funcional, aunque cada correo también se devuelve en su

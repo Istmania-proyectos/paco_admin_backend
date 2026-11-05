@@ -26,30 +26,113 @@ describe('TicketsService automation', () => {
   }
 
   it.each([
-    ['con token', (service: TicketsService) =>
-      service.respondAsSeller({ token: 'a'.repeat(40), accion: 'REABRIR' })],
-    ['sin token', (service: TicketsService) =>
-      service.respondWithoutToken('12', {
-        accion: 'REABRIR',
-        respuestasNuevas: [
-          {
-            IdTicketDetalle: 1,
-            IdDetalleOrigen: 1,
-            IdPreguntaOrigen: 49,
-            Valor: '2',
-          },
-        ],
-      })],
-    ['por producto', (service: TicketsService) =>
-      service.respondAsSeller({
-        token: 'a'.repeat(40),
-        productos: [{ idTicketProducto: 1, accion: 'REABRIR' }],
-      })],
+    [
+      'con token',
+      (service: TicketsService) =>
+        service.respondAsSeller({
+          token: 'a'.repeat(40),
+          accion: 'REABRIR',
+          comentario: 'La solución no resolvió la solicitud',
+        }),
+    ],
+    [
+      'sin token',
+      (service: TicketsService) =>
+        service.respondWithoutToken('12', {
+          accion: 'REABRIR',
+          comentario: 'La solución no resolvió la solicitud',
+          respuestasNuevas: [
+            {
+              IdTicketDetalle: 1,
+              IdDetalleOrigen: 1,
+              IdPreguntaOrigen: 49,
+              Valor: '2',
+            },
+          ],
+        }),
+    ],
+    [
+      'por producto',
+      (service: TicketsService) =>
+        service.respondAsSeller({
+          token: 'a'.repeat(40),
+          productos: [
+            {
+              idTicketProducto: 1,
+              accion: 'REABRIR',
+              comentario: 'La solución no resolvió la solicitud',
+            },
+          ],
+        }),
+    ],
   ])('rechaza la reapertura fuera de plazo %s', async (_path, respond) => {
     const { service } = setup([{ Resultado: 'REAPERTURA_FUERA_DE_PLAZO' }]);
 
     await expect(respond(service)).rejects.toThrow(
       'No se puede reabrir un ticket despues de 30 dias desde su creacion.',
+    );
+  });
+
+  it.each([undefined, '', '   ', '\t\n'])(
+    'rechaza reaperturas sin motivo (%s) en todas las rutas',
+    async (comentario) => {
+      const { service, database } = setup([]);
+      await expect(
+        service.respondAsSeller({
+          token: 'a'.repeat(40),
+          accion: 'REABRIR',
+          comentario,
+        }),
+      ).rejects.toThrow('Debe indicar el motivo');
+      await expect(
+        service.respondAsSeller({
+          token: 'a'.repeat(40),
+          comentario: 'Motivo general',
+          productos: [
+            { idTicketProducto: 1, accion: 'CERRAR' },
+            { idTicketProducto: 2, accion: 'REABRIR', comentario },
+          ],
+        }),
+      ).rejects.toThrow('Debe indicar el motivo');
+      await expect(
+        service.respondWithoutToken('12', {
+          accion: 'REABRIR',
+          comentario,
+        }),
+      ).rejects.toThrow('Debe indicar el motivo');
+      expect(database.executeProcedure).not.toHaveBeenCalled();
+    },
+  );
+
+  it('permite cerrar sin motivo y conserva el motivo al reabrir por producto', async () => {
+    const { service, database } = setup([
+      { NumeroTicket: 'TKT-12', Estado: 'CERRADO' },
+    ]);
+    jest.spyOn(service as any, 'notifySafely').mockResolvedValue(undefined);
+    await service.respondAsSeller({ token: 'a'.repeat(40), accion: 'CERRAR' });
+    await service.respondAsSeller({
+      token: 'a'.repeat(40),
+      productos: [
+        {
+          idTicketProducto: 1,
+          accion: 'REABRIR',
+          comentario: 'Producto aún dañado',
+        },
+      ],
+    });
+    expect(database.executeProcedure).toHaveBeenLastCalledWith(
+      'PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR',
+      expect.objectContaining({
+        Json: JSON.stringify({
+          productos: [
+            {
+              idTicketProducto: 1,
+              accion: 'REABRIR',
+              comentario: 'Producto aún dañado',
+            },
+          ],
+        }),
+      }),
     );
   });
 
@@ -247,8 +330,177 @@ describe('TicketsService automation', () => {
     ]);
     expect(database.query).toHaveBeenCalledWith(
       expect.stringContaining('SG.codigo_vendedor = T.CodigoVendedor'),
-      { ticketId: 18 },
+      { ticketId: 18, productIds: null },
     );
+  });
+
+  it('sugiere contactos por tipo de plan y conserva vendedor, supervisor y jefe sin duplicados', async () => {
+    const { service, database } = setup([]);
+    database.query.mockResolvedValue([
+      {
+        codigoVendedor: 'T04',
+        tipoAccion: 'CAMBIO',
+        correoVendedor: 'vendedor@test.local',
+        correoSupervisor: 'SUPERVISOR@test.local',
+      },
+      {
+        codigoVendedor: 'T04',
+        tipoAccion: 'PROMOCION',
+        correoVendedor: 'vendedor@test.local',
+        correoJefeMarca: 'jefe@test.local',
+      },
+    ]);
+    const result = await service.getExecutionSuggestedEmails(18, [40, 41]);
+    expect(result).toEqual([
+      'vendedor@test.local',
+      'supervisor@test.local',
+      'jefe@test.local',
+      'hector.contreras@istmania.hn',
+      'reina.espinal@istmania.hn',
+      'andrea.castro@istmania.hn',
+      'robert.cabrera@istmania.hn',
+      'jorge.varela@istmania.hn',
+      'junior.osorto@istmania.hn',
+      'lissy.flores@istmania.hn',
+    ]);
+    expect(database.query).toHaveBeenCalledWith(
+      expect.stringContaining("P.Estado = 'PLAN_APROBADO'"),
+      {
+        ticketId: 18,
+        productIds: '[40,41]',
+      },
+    );
+  });
+
+  it('envía los correos editados al iniciar ejecución por productos desde la bandeja', async () => {
+    const { service, database } = setup([]);
+    database.query.mockResolvedValue([{ CorreoDestino: 'jefe@test.local' }]);
+    database.executeProcedure.mockResolvedValue([
+      { IdTicket: 18, Estado: 'PENDIENTE_CIERRE' },
+    ]);
+    const copies = jest
+      .spyOn(service as any, 'sendExecutionCopies')
+      .mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'notifySafely').mockResolvedValue(undefined);
+    await service.transitionProducts(
+      '18',
+      {
+        accion: 'INICIAR_EJECUCION',
+        productos: [{ idTicketProducto: 40 }],
+        correosCc: ['seleccionado@test.local'],
+      },
+      { id: 'jefe', roles: 'TICKET_JEFE_MARCA' } as any,
+    );
+    expect(copies).toHaveBeenCalledWith(
+      expect.objectContaining({ IdTicket: 18 }),
+      ['seleccionado@test.local'],
+    );
+  });
+
+  it.each(['JEFE_MARCA', 'MERCADEO', 'GERENCIA_GENERAL', 'EJECUCION'])(
+    'expone el motivo original de solicitud en la etapa %s',
+    async (Etapa) => {
+      const { service, database } = setup([
+        { TokenEstado: 'VALIDO', IdTicket: 18, Etapa },
+      ]);
+      database.query.mockResolvedValue([
+        { Valor: '  Producto próximo a vencer  ' },
+        { Valor: '' },
+        { Valor: 'Producto próximo a vencer' },
+      ]);
+      const ticket = await service.getApprovalTicket('token-prueba');
+      expect(ticket.MotivoSolicitud).toBe('Producto próximo a vencer');
+      expect(database.query).toHaveBeenCalledWith(
+        expect.stringContaining('IdPreguntaOrigen = 1391'),
+        { ticketId: 18 },
+      );
+    },
+  );
+
+  it('incluye todos los motivos en el cierre del vendedor sin confundirlos con el plan', async () => {
+    const { service, database } = setup([
+      { TokenEstado: 'VALIDO', IdTicket: 18, Motivo: 'DEVOLUCION' },
+    ]);
+    database.query.mockResolvedValue([
+      { Valor: 'Producto próximo a vencer' },
+      { Valor: 'Empaque dañado' },
+    ]);
+    const ticket = await service.getSellerTicket('token-prueba');
+    expect(ticket.MotivoSolicitud).toBe(
+      'Producto próximo a vencer\nEmpaque dañado',
+    );
+    expect((ticket as any).Motivo).toBe('DEVOLUCION');
+  });
+
+  it('entrega el motivo de reapertura del producto junto al motivo original', async () => {
+    const { service, database } = setup([]);
+    database.executeProcedure.mockImplementation((procedure: string) =>
+      Promise.resolve(
+        procedure === 'PACO_TICKET_GET_APROBACION'
+          ? [{ TokenEstado: 'VALIDO', IdTicket: 18, Etapa: 'JEFE_MARCA' }]
+          : [{ IdTicketProducto: 40, Estado: 'REABIERTO_URGENTE' }],
+      ),
+    );
+    database.query.mockImplementation((query: string) =>
+      Promise.resolve(
+        query.includes('WITH Reaperturas')
+          ? [{ IdTicketProducto: 40, Comentario: 'La solución no se ejecutó' }]
+          : [{ Valor: 'Producto próximo a vencer' }],
+      ),
+    );
+    const ticket = await service.getApprovalTicket('token-prueba');
+    expect(ticket.MotivoSolicitud).toBe('Producto próximo a vencer');
+    expect(ticket.Productos[0].MotivoReapertura).toBe(
+      'La solución no se ejecutó',
+    );
+  });
+
+  it.each([undefined, '', '   '])(
+    'exige comentario de aprobación en todas las rutas (%s)',
+    async (comentario) => {
+      const { service, database } = setup([]);
+      await expect(
+        service.respondApproval({
+          token: 'prueba',
+          decision: 'APROBAR',
+          comentario,
+        }),
+      ).rejects.toThrow('Debe indicar un comentario');
+      await expect(
+        service.respondApproval({
+          token: 'prueba',
+          productos: [
+            { idTicketProducto: 40, decision: 'APROBAR', comentario },
+          ],
+        } as any),
+      ).rejects.toThrow('Debe indicar un comentario');
+      await expect(
+        service.transition(
+          '18',
+          { accion: 'APROBAR_MERCADEO', comentario },
+          {} as any,
+        ),
+      ).rejects.toThrow('Debe indicar un comentario');
+      await expect(
+        service.transitionProducts(
+          '18',
+          {
+            accion: 'APROBAR_GERENCIA',
+            productos: [{ idTicketProducto: 40, comentario }],
+          },
+          {} as any,
+        ),
+      ).rejects.toThrow('Debe indicar un comentario');
+      expect(database.executeProcedure).not.toHaveBeenCalled();
+    },
+  );
+
+  it('tolera tickets anteriores que no tienen motivo de solicitud', async () => {
+    const { service } = setup([
+      { TokenEstado: 'VALIDO', IdTicket: 18, Etapa: 'JEFE_MARCA' },
+    ]);
+    const ticket = await service.getApprovalTicket('token-prueba');
+    expect(ticket.MotivoSolicitud).toBe('');
   });
 
   it('notifica el cierre al correo demo si el vendedor no tiene correo', async () => {

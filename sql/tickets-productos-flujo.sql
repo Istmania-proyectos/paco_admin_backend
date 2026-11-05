@@ -117,7 +117,7 @@ BEGIN
   JOIN dbo.tbl_Ticket T ON T.IdTicket=I.IdTicket
   OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.IdPreguntaOrigen=46 AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) M
   OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.IdPreguntaOrigen=47 AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) A
-  OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.Pregunta LIKE N'%vencimiento%' AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) F
+  OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND (D.IdPreguntaOrigen=48 OR D.Pregunta LIKE N'%vencimiento%') AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) F
   OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.IdPreguntaOrigen=49 AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) C
   OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.IdPreguntaOrigen=1341 AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) L
   WHERE NOT EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto P WHERE P.IdTicket=I.IdTicket AND P.IdDetalleOrigenInicio=I.IdDetalleOrigen);
@@ -132,7 +132,7 @@ BEGIN
     FechaActualizacion=SYSUTCDATETIME()
   FROM dbo.tbl_Ticket_Producto P
   JOIN Inicios I ON I.IdTicket=P.IdTicket AND I.IdDetalleOrigen=P.IdDetalleOrigenInicio
-  OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND D.Pregunta LIKE N'%vencimiento%' AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) F
+  OUTER APPLY(SELECT TOP(1) D.Valor FROM dbo.tbl_Ticket_Detalle D WHERE D.IdTicket=I.IdTicket AND (D.IdPreguntaOrigen=48 OR D.Pregunta LIKE N'%vencimiento%') AND D.IdDetalleOrigen>I.IdDetalleOrigen AND (I.Siguiente IS NULL OR D.IdDetalleOrigen<I.Siguiente) ORDER BY D.IdDetalleOrigen) F
   WHERE P.FechaVencimiento IS NULL AND NULLIF(LTRIM(RTRIM(F.Valor)),N'') IS NOT NULL;
 END
 GO
@@ -550,7 +550,8 @@ BEGIN
   DECLARE @ClienteBusqueda NVARCHAR(250)=REPLACE(REPLACE(REPLACE(@ClienteFiltro,N'·',N' '),N'-',N' '),N',',N' ');
   DECLARE @VendedorBusqueda NVARCHAR(250)=REPLACE(REPLACE(REPLACE(@VendedorFiltro,N'·',N' '),N'-',N' '),N',',N' ');
   SELECT T.IdTicket,T.NumeroTicket,T.CodigoCliente,T.NombreCliente,T.CodigoVendedor,T.NombreVendedor,
-    T.Titulo,T.Prioridad,T.Estado,T.FechaCreacion,T.FechaVencimiento,
+    T.Titulo,T.Prioridad,T.Estado,T.FechaCreacion,
+    COALESCE(P.FechaVencimiento,FV.FechaVencimiento,T.FechaVencimiento) FechaVencimiento,
     P.Ocurrencia ProductoNumero,P.CodigoArticulo,P.Articulo,P.Marca,P.Lote,
     COALESCE(P.FechaVencimiento,FV.FechaVencimiento) FechaVencimientoProducto,P.Cantidad,P.Estado EstadoProducto,
     A.TipoAccion Motivo,A.Descripcion PlanAccion,A.FechaCompromiso
@@ -559,7 +560,7 @@ BEGIN
   OUTER APPLY(SELECT TOP(1) COALESCE(TRY_CONVERT(DATE,D.Valor,103),TRY_CONVERT(DATE,D.Valor)) FechaVencimiento
     FROM dbo.tbl_Ticket_Detalle D
     WHERE D.IdTicket=T.IdTicket AND P.IdTicketProducto IS NOT NULL
-      AND D.Pregunta LIKE N'%vencimiento%'
+      AND (D.IdPreguntaOrigen=48 OR D.Pregunta LIKE N'%vencimiento%')
       AND D.IdDetalleOrigen>P.IdDetalleOrigenInicio
       AND NOT EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto S WHERE S.IdTicket=P.IdTicket
         AND S.IdDetalleOrigenInicio>P.IdDetalleOrigenInicio AND S.IdDetalleOrigenInicio<=D.IdDetalleOrigen)

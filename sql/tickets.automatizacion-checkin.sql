@@ -121,6 +121,37 @@ BEGIN
 END
 GO
 
+/* El remitente de CheckIn solo aporta el formulario. SlpCode se resuelve
+   contra el ID SAP alfanumerico de tbl_Vendedor. DISTINCT evita
+   multiplicar respuestas cuando APP_CLIENTES_S4 repite un cliente/vendedor. */
+CREATE OR ALTER FUNCTION dbo.PACO_TICKET_VENDEDOR_CLIENTE(@Cliente NVARCHAR(50))
+RETURNS TABLE
+AS
+RETURN (
+    SELECT S.cantidad_asignaciones_sap, V.cantidad_vendedores,
+           V.codigo_vendedor, V.nombre_vendedor, V.correo_vendedor
+    FROM (
+        SELECT COUNT(*) cantidad_asignaciones_sap, MIN(C.SlpCode) SlpCode
+        FROM (
+            SELECT DISTINCT NULLIF(LTRIM(RTRIM(CONVERT(NVARCHAR(50), SlpCode))), '')
+                COLLATE DATABASE_DEFAULT SlpCode
+            FROM [PACO_S4HANA].dbo.APP_CLIENTES_S4
+            WHERE LTRIM(RTRIM(CONVERT(NVARCHAR(50), CardCode))) COLLATE DATABASE_DEFAULT
+                = LTRIM(RTRIM(@Cliente)) COLLATE DATABASE_DEFAULT
+        ) C
+    ) S
+    CROSS APPLY (
+        SELECT COUNT(*) cantidad_vendedores,
+               MIN(NULLIF(LTRIM(RTRIM(codigo_vendedor)), '')) codigo_vendedor,
+               MIN(NULLIF(LTRIM(RTRIM(nombre_vendedor)), '')) nombre_vendedor,
+               MIN(NULLIF(LTRIM(RTRIM(email)), '')) correo_vendedor
+        FROM dbo.tbl_Vendedor
+        WHERE S.cantidad_asignaciones_sap = 1
+          AND id_sap_vendedor COLLATE DATABASE_DEFAULT = S.SlpCode
+    ) V
+);
+GO
+
 CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_AUTOMATIZAR_CHECKIN
     @Formulario INT = 14,
     @Ejecutar BIT = 0,
@@ -153,8 +184,10 @@ BEGIN
         CONVERT(NVARCHAR(50), R.cliente) cliente,
         R.creado,
         CONVERT(NVARCHAR(200), C.descripcion) cliente_descripcion,
-        CONVERT(NVARCHAR(256), U.Email) vendedor_email,
-        CONVERT(NVARCHAR(200), CONCAT(U.FirstName, N' ', U.LastName)) vendedor_nombre
+        CONVERT(NVARCHAR(450), V.codigo_vendedor) codigo_vendedor,
+        CONVERT(NVARCHAR(256), V.correo_vendedor) vendedor_email,
+        CONVERT(NVARCHAR(200), V.nombre_vendedor) vendedor_nombre,
+        V.cantidad_asignaciones_sap, V.cantidad_vendedores
     INTO #Base
     FROM [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Respuesta_Detalle] RD
     LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Preguntas] P
@@ -163,20 +196,7 @@ BEGIN
         ON F.formulario = RD.formulario
     LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Respuestas] R
         ON R.respuesta = RD.respuesta
-    OUTER APPLY (
-        SELECT TOP (1)
-            CU.Email,
-            CU.FirstName,
-            CU.LastName
-        FROM [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[Users] CU
-        WHERE CU.UserID = TRY_CONVERT(UNIQUEIDENTIFIER, R.usuario)
-           OR LTRIM(RTRIM(CU.Username)) COLLATE DATABASE_DEFAULT =
-              LTRIM(RTRIM(CONVERT(NVARCHAR(450), R.usuario))) COLLATE DATABASE_DEFAULT
-        ORDER BY CASE
-            WHEN CU.UserID = TRY_CONVERT(UNIQUEIDENTIFIER, R.usuario) THEN 0
-            ELSE 1
-        END
-    ) U
+    CROSS APPLY dbo.PACO_TICKET_VENDEDOR_CLIENTE(CONVERT(NVARCHAR(50), R.cliente)) V
     LEFT JOIN [10.10.10.10].[CHECKIN_APP_S4HANA].[dbo].[tbl_Check_Clientes_S4] C
         ON C.cliente = R.cliente
     WHERE RD.formulario = @Formulario
@@ -214,12 +234,20 @@ BEGIN
         AU.Email jefe_email
     INTO #Coincidencias
     FROM #Productos P
-    LEFT JOIN dbo.tbl_Casa_Usuario CU
-        ON CU.Activo = 1
-       AND LTRIM(RTRIM(CONVERT(NVARCHAR(200), CU.Casa)))
-            COLLATE DATABASE_DEFAULT = P.casa COLLATE DATABASE_DEFAULT
-       AND LTRIM(RTRIM(CONVERT(NVARCHAR(200), CU.Marca)))
-            COLLATE DATABASE_DEFAULT = P.marca COLLATE DATABASE_DEFAULT
+    /* Una Casa/Marca puede conservar asignaciones activas históricas. Para
+       Tickets prevalece el jefe creado más recientemente, evitando bloquear
+       la importación por una asignación ambigua. UserId deja el resultado
+       determinístico si dos registros tuvieran exactamente la misma fecha. */
+    OUTER APPLY (
+        SELECT TOP (1) X.UserId
+        FROM dbo.tbl_Casa_Usuario X
+        WHERE X.Activo = 1
+          AND LTRIM(RTRIM(CONVERT(NVARCHAR(200), X.Casa)))
+              COLLATE DATABASE_DEFAULT = P.casa COLLATE DATABASE_DEFAULT
+          AND LTRIM(RTRIM(CONVERT(NVARCHAR(200), X.Marca)))
+              COLLATE DATABASE_DEFAULT = P.marca COLLATE DATABASE_DEFAULT
+        ORDER BY X.FechaCreacion DESC, X.UserId DESC
+    ) CU
     LEFT JOIN dbo.AspNetUsers AU ON AU.Id = CU.UserId;
 
     SELECT C.*,
@@ -240,9 +268,18 @@ BEGIN
             CASE WHEN NULLIF(MIN(B.cliente_descripcion), '') IS NULL THEN ''
                  ELSE CONCAT(N' - ', MIN(B.cliente_descripcion)) END
         ) nombre_cliente,
-        MIN(B.usuario) codigo_vendedor,
+        MIN(B.codigo_vendedor) codigo_vendedor,
         MIN(B.vendedor_nombre) nombre_vendedor,
         MIN(B.vendedor_email) correo_vendedor,
+        CASE
+            WHEN COUNT(DISTINCT B.cliente) <> 1 THEN 'CLIENTE_AMBIGUO'
+            WHEN MAX(B.cantidad_asignaciones_sap) > 1 THEN 'VENDEDOR_AMBIGUO'
+            WHEN MIN(B.cantidad_asignaciones_sap) = 0 THEN 'SIN_VENDEDOR_CLIENTE'
+            WHEN MAX(B.cantidad_vendedores) > 1 THEN 'VENDEDOR_AMBIGUO'
+            WHEN MIN(B.cantidad_vendedores) = 0
+              OR MIN(B.codigo_vendedor) IS NULL THEN 'SIN_VENDEDOR_MAESTRO'
+            WHEN MIN(B.vendedor_email) IS NULL THEN 'VENDEDOR_SIN_CORREO'
+        END error_vendedor,
         MIN(B.creado) fecha_respuesta,
         COUNT(DISTINCT A.respuesta) cantidad_respuestas
     INTO #Grupos
@@ -267,6 +304,7 @@ BEGIN
         CorreoGerenciaGeneral NVARCHAR(256) NULL,
         EsDemo BIT NOT NULL DEFAULT (0),
         CorreoDemo NVARCHAR(256) NULL,
+        CodigoVendedor NVARCHAR(450) NULL,
         NombreVendedor NVARCHAR(200) NULL,
         CorreoVendedor NVARCHAR(256) NULL,
         CodigoCliente NVARCHAR(50) NULL,
@@ -309,7 +347,7 @@ BEGIN
     INSERT #Salida (
         DependenciaRespuesta, JefeMarcaUsuarioId, JefeMarcaNombre,
         CorreoJefeMarca, CorreoMercadeo, CorreoGerenciaGeneral,
-        NombreVendedor, CorreoVendedor, CodigoCliente, Cliente, Respuestas,
+        CodigoVendedor, NombreVendedor, CorreoVendedor, CodigoCliente, Cliente, Respuestas,
         CasasMarcas, CantidadRespuestas, IdTicketExistente,
         NumeroTicketExistente, CorreoJefeMarcaExistente,
         CoincideJefeTicketExistente, EstadoResultado, Observacion
@@ -317,7 +355,7 @@ BEGIN
     SELECT
         G.dependencia_respuesta, G.jefe_usuario_id, G.jefe_nombre,
         G.jefe_email, NULLIF(@CorreoMercadeo, ''), NULLIF(@CorreoGerencia, ''),
-        G.nombre_vendedor, G.correo_vendedor, G.codigo_cliente, G.nombre_cliente,
+        G.codigo_vendedor, G.nombre_vendedor, G.correo_vendedor, G.codigo_cliente, G.nombre_cliente,
         STUFF((
             SELECT DISTINCT N', ' + CONVERT(NVARCHAR(30), A2.respuesta)
             FROM #Asignaciones A2
@@ -345,6 +383,7 @@ BEGIN
                   LOWER(LTRIM(RTRIM(COALESCE(G.jefe_email, ''))))
              THEN 1 ELSE 0 END,
         CASE
+            WHEN G.error_vendedor IS NOT NULL THEN G.error_vendedor
             WHEN NULLIF(G.jefe_email, '') IS NULL THEN 'JEFE_SIN_CORREO'
             WHEN X.IdTicket IS NOT NULL AND NOT EXISTS (
                 SELECT 1
@@ -365,6 +404,8 @@ BEGIN
         END,
         CONCAT(
         CASE
+            WHEN G.error_vendedor IS NOT NULL
+                THEN N'Revisar CardCode/SlpCode en PACO_S4HANA.dbo.APP_CLIENTES_S4 y el ID SAP, codigo y correo en dbo.tbl_Vendedor. El remitente no se usa como responsable.'
             WHEN NULLIF(G.jefe_email, '') IS NULL
                 THEN N'El jefe de marca esta asignado pero no tiene correo.'
             WHEN NULLIF(@CorreoMercadeo, '') IS NULL
@@ -445,6 +486,7 @@ BEGIN
                    G.fecha_respuesta
             FROM #Grupos G
             WHERE NULLIF(G.jefe_email, '') IS NOT NULL
+              AND G.error_vendedor IS NULL
             ORDER BY G.fecha_respuesta DESC, G.dependencia_respuesta,
                      G.jefe_usuario_id;
 
@@ -483,16 +525,24 @@ BEGIN
                     AND O.JefeMarcaUsuarioId = @JefeId
               );
 
-            /* Repara datos de contacto aunque las respuestas ya estuvieran
-               importadas. Algunos CheckIn guardan R.usuario como Username
-               (por ejemplo T08) y no como GUID. */
+            /* Los enlaces enviados al remitente anterior dejan de autorizar
+               cierre/reapertura cuando cambia el vendedor responsable. */
             IF @IdTicket IS NOT NULL
+            BEGIN
+                UPDATE V SET FechaUso = SYSUTCDATETIME()
+                FROM dbo.tbl_Ticket_Token_Vendedor V
+                JOIN dbo.tbl_Ticket T ON T.IdTicket = V.IdTicket
+                WHERE T.IdTicket = @IdTicket AND V.FechaUso IS NULL
+                  AND (ISNULL(T.CodigoVendedor, '') <> @CodigoVendedor
+                    OR ISNULL(T.CorreoVendedor, '') <> @CorreoVendedor);
+
                 UPDATE dbo.tbl_Ticket
-                SET CodigoVendedor = COALESCE(NULLIF(@CodigoVendedor, ''), CodigoVendedor),
-                    NombreVendedor = COALESCE(NULLIF(@NombreVendedor, ''), NombreVendedor),
-                    CorreoVendedor = COALESCE(NULLIF(@CorreoVendedor, ''), CorreoVendedor),
+                SET CodigoVendedor = @CodigoVendedor,
+                    NombreVendedor = @NombreVendedor,
+                    CorreoVendedor = @CorreoVendedor,
                     FechaActualizacion = SYSUTCDATETIME()
                 WHERE IdTicket = @IdTicket;
+            END
 
             IF @CantidadNueva > 0
             BEGIN
@@ -566,7 +616,10 @@ BEGIN
                     @IdTicket, B.respuesta_detalle, B.respuesta, B.pregunta,
                     B.pregunta_descripcion, B.tipo_pregunta, B.valor
                 FROM #Base B
-                WHERE EXISTS (
+                -- Los detalles deben pertenecer al grupo actual, igual que
+                -- la trazabilidad insertada en tbl_Ticket_Checkin_Origen.
+                WHERE B.dependencia_respuesta = @Dependencia
+                  AND EXISTS (
                     SELECT 1 FROM #Asignaciones A
                     WHERE A.respuesta = B.respuesta
                       AND A.jefe_usuario_id = @JefeId
