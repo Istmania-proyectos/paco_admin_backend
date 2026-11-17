@@ -588,11 +588,11 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
     this.remindersRunning = true;
     try {
       const configuredHours = Number(
-        this.config.get('TICKETS_REMINDERS_INTERVAL_HOURS') ?? 4,
+        this.config.get('TICKETS_REMINDERS_INTERVAL_HOURS') ?? 8,
       );
       const hours = Math.max(
         1,
-        Number.isFinite(configuredHours) ? configuredHours : 4,
+        Number.isFinite(configuredHours) ? configuredHours : 8,
       );
       const targets = await this.database.executeProcedure<any>(
         'PACO_TICKET_OBTENER_RECORDATORIOS',
@@ -1713,7 +1713,7 @@ export class TicketsService implements OnModuleInit, OnApplicationShutdown {
   private assertReopenWindow(status: string) {
     if (status === 'REAPERTURA_FUERA_DE_PLAZO') {
       throw new ConflictException(
-        'No se puede reabrir un ticket despues de 30 dias desde su creacion.',
+        'Solo se puede reabrir durante el ultimo mes antes del vencimiento del producto, incluida la fecha de vencimiento.',
       );
     }
   }

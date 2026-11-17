@@ -32,7 +32,6 @@ export class TicketActionDto {
     'CAMBIO',
     'DEVOLUCION',
     'DESCUENTO',
-    'REUBICACION',
     'PROMOCION',
     'DEGUSTACION',
     'NOTA_CREDITO',

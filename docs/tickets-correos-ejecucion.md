@@ -15,7 +15,7 @@ usan el dominio `@istmania.hn`.
 | Cambio por cambio | hector.contreras; reina.espinal | ariana.garmendia; kenia.alvarez; eleasar.sagastume; carolina.puerto; cristian.caballero; mario.george | andrea.castro; robert.cabrera; jorge.varela; junior.osorto |
 | Devolución/NC | hector.contreras; reina.espinal | zoila.padilla; natalia.izaguirre; más el grupo SPS de cambio por cambio | omar.caceres; gerardo.zelaya; más el grupo TGU de cambio por cambio |
 
-`NOTA_CREDITO` conserva las mismas reglas que `DEVOLUCION`. Reubicación y otro
+`NOTA_CREDITO` conserva las mismas reglas que `DEVOLUCION`. Los planes de tipo otro
 no agregan contactos adicionales. Sin zona reconocida se incluyen únicamente
 los contactos de ambas zonas y los correos base disponibles.
 

@@ -54,6 +54,46 @@ BEGIN
 END
 GO
 
+/* Reapertura: ultimo mes calendario antes del vencimiento, inclusive.
+   Usa fecha de Honduras (UTC-6), independiente del servidor SQL. */
+CREATE OR ALTER FUNCTION dbo.PACO_TICKET_PUEDE_REABRIR (
+  @Vencimiento DATE, @AhoraUtc DATETIME2(3)
+) RETURNS BIT
+AS
+BEGIN
+  DECLARE @Hoy DATE=CONVERT(DATE,DATEADD(HOUR,-6,@AhoraUtc));
+  RETURN CASE WHEN @Vencimiento IS NOT NULL
+    AND @Hoy BETWEEN DATEADD(MONTH,-1,@Vencimiento) AND @Vencimiento
+    THEN 1 ELSE 0 END;
+END;
+GO
+/* Validacion para rutas generales, sin seleccion individual de productos.
+   Si existen productos se evalua cada producto que se va a reabrir.
+   El SQL dinamico permite instalar el esquema base antes del flujo por producto. */
+CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_REAPERTURA_VALIDAR
+  @IdTicket BIGINT,@AhoraUtc DATETIME2(3),@Valida BIT OUTPUT
+AS
+BEGIN
+  SET NOCOUNT ON;
+  SET @Valida=0;
+  SELECT @Valida=dbo.PACO_TICKET_PUEDE_REABRIR(FechaVencimiento,@AhoraUtc)
+  FROM dbo.tbl_Ticket WHERE IdTicket=@IdTicket;
+  IF OBJECT_ID(N'dbo.tbl_Ticket_Producto',N'U') IS NOT NULL
+    EXEC sys.sp_executesql N'
+      IF EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto WHERE IdTicket=@Ticket)
+        SELECT @Permitida=CASE WHEN EXISTS(
+          SELECT 1 FROM dbo.tbl_Ticket_Producto
+          WHERE IdTicket=@Ticket AND Estado NOT IN(''CANCELADO'',''RECHAZADO_POLITICA'')
+        ) AND NOT EXISTS(
+          SELECT 1 FROM dbo.tbl_Ticket_Producto
+          WHERE IdTicket=@Ticket AND Estado NOT IN(''CANCELADO'',''RECHAZADO_POLITICA'')
+            AND dbo.PACO_TICKET_PUEDE_REABRIR(FechaVencimiento,@Ahora)=0
+        ) THEN 1 ELSE 0 END;',
+      N'@Ticket BIGINT,@Ahora DATETIME2(3),@Permitida BIT OUTPUT',
+      @Ticket=@IdTicket,@Ahora=@AhoraUtc,@Permitida=@Valida OUTPUT;
+END;
+GO
+
 /* Lectura de formularios CheckIn para importar tickets globales. Cada grupo
    (formulario, respuesta) se convierte en un ticket; sus preguntas en detalle. */
 CREATE OR ALTER PROCEDURE dbo.PACO_GET_TICKET_CHECKIN @Formulario INT = 14
@@ -828,7 +868,6 @@ BEGIN
         DECLARE @SellerUsed DATETIME2(3);
         DECLARE @SellerCurrentState VARCHAR(30);
         DECLARE @SellerNewState VARCHAR(30);
-        DECLARE @SellerCreatedAt DATETIME2(3);
         DECLARE @SellerCode VARCHAR(50);
         DECLARE @SellerEmail NVARCHAR(256);
 
@@ -840,8 +879,7 @@ BEGIN
             @SellerUsed = V.FechaUso,
             @SellerCode = V.CodigoVendedor,
             @SellerEmail = V.CorreoVendedor,
-            @SellerCurrentState = T.Estado,
-            @SellerCreatedAt = T.FechaCreacion
+            @SellerCurrentState = T.Estado
         FROM dbo.tbl_Ticket_Token_Vendedor V WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN dbo.tbl_Ticket T WITH (UPDLOCK, HOLDLOCK) ON T.IdTicket = V.IdTicket
         WHERE V.TokenHash = TRY_CONVERT(VARBINARY(32), @Param1, 2);
@@ -876,10 +914,9 @@ BEGIN
             RAISERROR('Accion de vendedor no valida.', 16, 1);
             RETURN;
         END
-        /* La reapertura solo se admite hasta 30 dias despues de crear el ticket.
-           La comparacion se hace dentro de la transaccion para que ningun cliente
-           pueda omitirla entre la validacion y la actualizacion. */
-        IF @Param2 = 'REABRIR' AND SYSUTCDATETIME() > DATEADD(DAY, 30, @SellerCreatedAt)
+        DECLARE @SellerReaperturaValida BIT,@SellerAhora DATETIME2(3)=SYSUTCDATETIME();
+        EXEC dbo.PACO_TICKET_REAPERTURA_VALIDAR @SellerTicketId,@SellerAhora,@SellerReaperturaValida OUTPUT;
+        IF @Param2 = 'REABRIR' AND @SellerReaperturaValida=0
         BEGIN
             ROLLBACK TRAN;
             SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
@@ -891,6 +928,14 @@ BEGIN
         UPDATE dbo.tbl_Ticket_Token_Vendedor
         SET FechaUso = SYSUTCDATETIME()
         WHERE IdTicket = @SellerTicketId AND FechaUso IS NULL;
+
+        IF OBJECT_ID(N'dbo.tbl_Ticket_Producto',N'U') IS NOT NULL
+            EXEC sys.sp_executesql N'
+                UPDATE dbo.tbl_Ticket_Producto SET Estado=@Estado,FechaActualizacion=SYSUTCDATETIME()
+                WHERE IdTicket=@Ticket AND (
+                  (@Estado=''CERRADO'' AND Estado=''PENDIENTE_CIERRE'')
+                  OR (@Estado=''REABIERTO_URGENTE'' AND Estado NOT IN(''CANCELADO'',''RECHAZADO_POLITICA''))
+                );',N'@Ticket BIGINT,@Estado VARCHAR(40)',@Ticket=@SellerTicketId,@Estado=@SellerNewState;
 
         UPDATE dbo.tbl_Ticket
         SET Estado = @SellerNewState,
@@ -930,7 +975,6 @@ BEGIN
         DECLARE @PublicTicketId BIGINT = TRY_CONVERT(BIGINT, @Param1);
         DECLARE @PublicCurrentState VARCHAR(30);
         DECLARE @PublicNewState VARCHAR(30);
-        DECLARE @PublicCreatedAt DATETIME2(3);
         DECLARE @PublicComment NVARCHAR(2000) = @Param3;
         DECLARE @PreviousAnswers NVARCHAR(MAX);
         DECLARE @NewAnswers NVARCHAR(MAX) = N'[]';
@@ -942,8 +986,7 @@ BEGIN
         END
 
         BEGIN TRAN;
-        SELECT @PublicCurrentState = Estado,
-               @PublicCreatedAt = FechaCreacion
+        SELECT @PublicCurrentState = Estado
         FROM dbo.tbl_Ticket WITH (UPDLOCK, HOLDLOCK)
         WHERE IdTicket = @PublicTicketId AND Activo = 1;
 
@@ -962,7 +1005,9 @@ BEGIN
             RETURN;
         END
 
-        IF @Param2 = 'REABRIR' AND SYSUTCDATETIME() > DATEADD(DAY, 30, @PublicCreatedAt)
+        DECLARE @PublicReaperturaValida BIT,@PublicAhora DATETIME2(3)=SYSUTCDATETIME();
+        EXEC dbo.PACO_TICKET_REAPERTURA_VALIDAR @PublicTicketId,@PublicAhora,@PublicReaperturaValida OUTPUT;
+        IF @Param2 = 'REABRIR' AND @PublicReaperturaValida=0
         BEGIN
             ROLLBACK TRAN;
             SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
@@ -1081,6 +1126,14 @@ BEGIN
                     N'@Json NVARCHAR(MAX), @Ticket BIGINT',
                     @Json = @NewAnswers, @Ticket = @PublicTicketId;
         END
+
+        IF OBJECT_ID(N'dbo.tbl_Ticket_Producto',N'U') IS NOT NULL
+            EXEC sys.sp_executesql N'
+                UPDATE dbo.tbl_Ticket_Producto SET Estado=@Estado,FechaActualizacion=SYSUTCDATETIME()
+                WHERE IdTicket=@Ticket AND (
+                  (@Estado=''CERRADO'' AND Estado=''PENDIENTE_CIERRE'')
+                  OR (@Estado=''REABIERTO_URGENTE'' AND Estado NOT IN(''CANCELADO'',''RECHAZADO_POLITICA''))
+                );',N'@Ticket BIGINT,@Estado VARCHAR(40)',@Ticket=@PublicTicketId,@Estado=@PublicNewState;
 
         UPDATE dbo.tbl_Ticket
         SET Estado = @PublicNewState,

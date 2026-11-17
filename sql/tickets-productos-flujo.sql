@@ -195,7 +195,10 @@ AS
 BEGIN
   SET NOCOUNT ON;
   EXEC dbo.PACO_TICKET_PRODUCTOS_SINCRONIZAR @IdTicket;
-  SELECT P.*,A.IdPlanAccion,A.TipoAccion,A.Descripcion PlanAccion,
+  SELECT P.*,DATEADD(MONTH,-1,P.FechaVencimiento) FechaInicioReapertura,
+    P.FechaVencimiento FechaLimiteReapertura,
+    dbo.PACO_TICKET_PUEDE_REABRIR(P.FechaVencimiento,SYSUTCDATETIME()) PuedeReabrir,
+    A.IdPlanAccion,A.TipoAccion,A.Descripcion PlanAccion,
     A.FechaCompromiso,A.Responsable,A.Estado PlanEstado,
     CAST(CASE WHEN P.FechaVencimiento IS NOT NULL
       AND P.FechaVencimiento<DATEADD(MONTH,3,CONVERT(DATE,COALESCE(T.FechaRespuestaOrigen,T.FechaCreacion)))
@@ -296,8 +299,16 @@ BEGIN
      real del producto, tanto por correo como desde la bandeja web. */
   UPDATE I SET EstadoAnterior=P.Estado
   FROM @Items I
-  JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto
+  JOIN dbo.tbl_Ticket_Producto P WITH(UPDLOCK,HOLDLOCK) ON P.IdTicketProducto=I.IdProducto
   WHERE P.IdTicket=@Ticket;
+  IF EXISTS(SELECT IdProducto FROM @Items GROUP BY IdProducto HAVING COUNT(*)>1)
+    OR EXISTS(SELECT 1 FROM @Items WHERE EstadoAnterior IS NULL OR Decision IS NULL
+      OR NOT ((@Etapa='JEFE_MARCA' AND EstadoAnterior IN('PENDIENTE_PLAN','REABIERTO_URGENTE'))
+        OR (@Etapa='MERCADEO' AND EstadoAnterior='PENDIENTE_MERCADEO')
+        OR (@Etapa='GERENCIA_GENERAL' AND EstadoAnterior='PENDIENTE_GERENCIA_GENERAL')
+        OR (@Etapa='EJECUCION' AND EstadoAnterior='PLAN_APROBADO')))
+    THROW 51000,'Hay productos repetidos, inexistentes o fuera de la etapa de respuesta.',1;
+
 
   IF @Etapa='JEFE_MARCA'
   BEGIN
@@ -412,7 +423,10 @@ BEGIN
   SET NOCOUNT ON;
   SELECT CASE WHEN V.FechaUso IS NOT NULL THEN 'USADO' WHEN V.FechaExpiracion<=SYSUTCDATETIME() THEN 'VENCIDO'
     WHEN T.Estado<>'PENDIENTE_CIERRE' AND NOT EXISTS(SELECT 1 FROM dbo.tbl_Ticket_Producto P WHERE P.IdTicket=T.IdTicket AND P.Estado='PENDIENTE_CIERRE') THEN 'PROCESADO'
-    ELSE 'VALIDO' END TokenEstado,T.IdTicket,T.NumeroTicket,T.CodigoCliente,T.NombreCliente,T.Titulo,T.Descripcion,T.Estado,T.FechaCreacion
+    ELSE 'VALIDO' END TokenEstado,T.IdTicket,T.NumeroTicket,T.CodigoCliente,T.NombreCliente,T.Titulo,T.Descripcion,T.Estado,T.FechaCreacion,T.FechaVencimiento,
+    DATEADD(MONTH,-1,T.FechaVencimiento) FechaInicioReapertura,
+    T.FechaVencimiento FechaLimiteReapertura,
+    dbo.PACO_TICKET_PUEDE_REABRIR(T.FechaVencimiento,SYSUTCDATETIME()) PuedeReabrir
   FROM dbo.tbl_Ticket_Token_Vendedor V JOIN dbo.tbl_Ticket T ON T.IdTicket=V.IdTicket
   WHERE V.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
 END
@@ -422,9 +436,8 @@ CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_PRODUCTOS_RESPONDER_VENDEDOR @HashHex 
 AS
 BEGIN
   SET NOCOUNT ON; SET XACT_ABORT ON; BEGIN TRAN;
-  DECLARE @Token BIGINT,@Ticket BIGINT,@Uso DATETIME2(3),@Expira DATETIME2(3),@Correo NVARCHAR(256),@TicketCreatedAt DATETIME2(3);
-  SELECT @Token=V.IdToken,@Ticket=V.IdTicket,@Uso=V.FechaUso,@Expira=V.FechaExpiracion,@Correo=V.CorreoVendedor,
-    @TicketCreatedAt=T.FechaCreacion
+  DECLARE @Token BIGINT,@Ticket BIGINT,@Uso DATETIME2(3),@Expira DATETIME2(3),@Correo NVARCHAR(256);
+  SELECT @Token=V.IdToken,@Ticket=V.IdTicket,@Uso=V.FechaUso,@Expira=V.FechaExpiracion,@Correo=V.CorreoVendedor
   FROM dbo.tbl_Ticket_Token_Vendedor V WITH(UPDLOCK,HOLDLOCK)
   JOIN dbo.tbl_Ticket T WITH(UPDLOCK,HOLDLOCK) ON T.IdTicket=V.IdTicket
   WHERE V.TokenHash=CONVERT(VARBINARY(32),@HashHex,2);
@@ -437,8 +450,12 @@ BEGIN
   SELECT IdProducto,Accion,Comentario FROM OPENJSON(@Json,'$.productos')
     WITH(IdProducto BIGINT '$.idTicketProducto',Accion VARCHAR(20) '$.accion',Comentario NVARCHAR(2000) '$.comentario');
   IF NOT EXISTS(SELECT 1 FROM @Items) THROW 51000,'Debe responder al menos un producto.',1;
-  IF EXISTS(SELECT 1 FROM @Items WHERE Accion='REABRIR')
-    AND SYSUTCDATETIME()>DATEADD(DAY,30,@TicketCreatedAt)
+  IF EXISTS(
+    SELECT 1 FROM @Items I JOIN dbo.tbl_Ticket_Producto P WITH(UPDLOCK,HOLDLOCK)
+      ON P.IdTicketProducto=I.IdProducto AND P.IdTicket=@Ticket
+    WHERE I.Accion='REABRIR'
+      AND dbo.PACO_TICKET_PUEDE_REABRIR(P.FechaVencimiento,SYSUTCDATETIME())=0
+  )
   BEGIN
     ROLLBACK;
     SELECT 'REAPERTURA_FUERA_DE_PLAZO' Resultado;
@@ -447,8 +464,13 @@ BEGIN
   /* El vendedor puede cerrar o reabrir productos en varias sesiones. */
   UPDATE I SET EstadoAnterior=P.Estado
   FROM @Items I
-  JOIN dbo.tbl_Ticket_Producto P ON P.IdTicketProducto=I.IdProducto
+  JOIN dbo.tbl_Ticket_Producto P WITH(UPDLOCK,HOLDLOCK) ON P.IdTicketProducto=I.IdProducto
   WHERE P.IdTicket=@Ticket;
+  IF EXISTS(SELECT IdProducto FROM @Items GROUP BY IdProducto HAVING COUNT(*)>1)
+    OR EXISTS(SELECT 1 FROM @Items WHERE EstadoAnterior IS NULL OR EstadoAnterior<>'PENDIENTE_CIERRE'
+      OR Accion IS NULL OR Accion NOT IN('CERRAR','REABRIR'))
+    THROW 51000,'Hay productos repetidos, inexistentes o fuera de la etapa de cierre.',1;
+
   UPDATE P SET Estado=CASE I.Accion WHEN 'CERRAR' THEN 'CERRADO' ELSE 'REABIERTO_URGENTE' END,FechaActualizacion=SYSUTCDATETIME()
   FROM dbo.tbl_Ticket_Producto P JOIN @Items I ON I.IdProducto=P.IdTicketProducto
   WHERE P.IdTicket=@Ticket AND P.Estado='PENDIENTE_CIERRE' AND I.Accion IN('CERRAR','REABRIR');
@@ -500,11 +522,11 @@ BEGIN
 END
 GO
 
-CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_OBTENER_RECORDATORIOS @Horas INT=4
+CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_OBTENER_RECORDATORIOS @Horas INT=8
 AS
 BEGIN
   SET NOCOUNT ON;
-  DECLARE @Desde DATETIME2(3)=DATEADD(HOUR,-IIF(@Horas<1,4,@Horas),SYSUTCDATETIME());
+  DECLARE @Desde DATETIME2(3)=DATEADD(HOUR,-IIF(@Horas<1,8,@Horas),SYSUTCDATETIME());
   ;WITH UltimoVendedor AS(
     SELECT IdTicket,MAX(FechaCreacion) FechaEnvio FROM dbo.tbl_Ticket_Token_Vendedor
     WHERE FechaUso IS NULL GROUP BY IdTicket

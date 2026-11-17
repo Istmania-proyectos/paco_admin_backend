@@ -25,6 +25,36 @@ describe('TicketsService automation', () => {
     return { service, database, mailer };
   }
 
+  it('consulta recordatorios cada 8 horas y los dirige a los responsables pendientes del flujo', async () => {
+    const approvals = ['JEFE_MARCA', 'MERCADEO', 'GERENCIA_GENERAL', 'EJECUCION'].map(
+      (Etapa) => ({ Tipo: 'APROBACION', IdTicket: 12, Etapa }),
+    );
+    const seller = {
+      Tipo: 'VENDEDOR',
+      IdTicket: 12,
+      Email: 'vendedor@example.test',
+      NombreVendedor: 'Vendedor',
+    };
+    const { service, database } = setup([...approvals, seller]);
+    const approvalEmail = jest.spyOn(service as any, 'sendApprovalEmail').mockResolvedValue(undefined);
+    const sellerEmail = jest.spyOn(service as any, 'sendAndLog').mockResolvedValue(undefined);
+
+    await (service as any).runScheduledReminders();
+
+    expect(database.executeProcedure).toHaveBeenCalledWith(
+      'PACO_TICKET_OBTENER_RECORDATORIOS',
+      { Horas: '8' },
+    );
+    expect(approvalEmail).toHaveBeenCalledTimes(4);
+    for (const target of approvals) expect(approvalEmail).toHaveBeenCalledWith(target);
+    expect(sellerEmail).toHaveBeenCalledTimes(1);
+    expect(sellerEmail).toHaveBeenCalledWith(expect.objectContaining({
+      Email: seller.Email,
+      Rol: 'VENDEDOR',
+      EsVendedorExterno: true,
+    }));
+  });
+
   it.each([
     [
       'con token',
@@ -69,7 +99,7 @@ describe('TicketsService automation', () => {
     const { service } = setup([{ Resultado: 'REAPERTURA_FUERA_DE_PLAZO' }]);
 
     await expect(respond(service)).rejects.toThrow(
-      'No se puede reabrir un ticket despues de 30 dias desde su creacion.',
+      'Solo se puede reabrir durante el ultimo mes antes del vencimiento del producto, incluida la fecha de vencimiento.',
     );
   });
 

@@ -85,7 +85,7 @@ BEGIN
       "detalles":[{"idDetalleOrigen":100021,"pregunta":"Producto / lote / cantidad","tipoRespuesta":"TEXTO","valor":"YOG-200 / YG2601 / 18"}]
     }', N'TICKET-USER-INTEGRACION', N'ticket.integracion@test.local', N'TICKET_INTEGRACION', N'';
     DECLARE @T2 BIGINT = (SELECT IdTicket FROM dbo.tbl_Ticket WHERE SistemaOrigen='DEMO' AND IdRespuestaOrigen=10002);
-    EXEC dbo.PACO_INSERT_TICKET 2, @T2, N'{"accion":"PROPONER_PLAN","tipoAccion":"REUBICACION","descripcionPlan":"Mover inventario a tiendas de alta rotación","fechaCompromiso":"2026-07-25","responsable":"TICKET-USER-SUPERVISOR","comentario":"Plan listo para revisión"}', N'TICKET-USER-JEFE-MARCA', N'ticket.jefemarca@test.local', N'TICKET_JEFE_MARCA';
+    EXEC dbo.PACO_INSERT_TICKET 2, @T2, N'{"accion":"PROPONER_PLAN","tipoAccion":"PROMOCION","descripcionPlan":"Promocionar el inventario disponible","fechaCompromiso":"2026-07-25","responsable":"TICKET-USER-SUPERVISOR","comentario":"Plan listo para revisión"}', N'TICKET-USER-JEFE-MARCA', N'ticket.jefemarca@test.local', N'TICKET_JEFE_MARCA';
 END
 GO
 

@@ -134,6 +134,10 @@ BEGIN
     IF @Estado IS NULL RAISERROR('Ticket no encontrado o no asignado al vendedor.',16,1);
     DECLARE @Nuevo VARCHAR(30)=CASE WHEN @Accion='CERRAR' AND @Estado='EN_EJECUCION' THEN 'CERRADO' WHEN @Accion='REABRIR' AND @Estado='EN_EJECUCION' THEN 'REABIERTO_URGENTE' END;
     IF @Nuevo IS NULL RAISERROR('Solo se puede cerrar o reabrir un ticket en ejecucion.',16,1);
+    DECLARE @ReaperturaValida BIT,@Ahora DATETIME2(3)=SYSUTCDATETIME();
+    EXEC dbo.PACO_TICKET_REAPERTURA_VALIDAR @IdTicket,@Ahora,@ReaperturaValida OUTPUT;
+    IF @Accion='REABRIR' AND @ReaperturaValida=0
+      THROW 51000,'Solo se puede reabrir durante el ultimo mes antes del vencimiento del producto, incluida la fecha de vencimiento.',1;
     UPDATE dbo.tbl_Ticket SET Estado=@Nuevo,Prioridad=IIF(@Nuevo='REABIERTO_URGENTE','URGENTE',Prioridad),FechaActualizacion=SYSUTCDATETIME(),FechaCierre=IIF(@Nuevo='CERRADO',SYSUTCDATETIME(),NULL) WHERE IdTicket=@IdTicket;
     INSERT dbo.tbl_Ticket_Historial(IdTicket,EstadoAnterior,EstadoNuevo,Accion,Comentario,UsuarioId,NombreUsuario,RolUsuario)
       VALUES(@IdTicket,@Estado,@Nuevo,@Accion,@Comentario,@UsuarioId,@NombreUsuario,'VENDEDOR');
@@ -173,11 +177,11 @@ GO
 /* Devuelve solo destinatarios que siguen pendientes y cuyo último enlace
    válido ya tiene la antigüedad indicada. */
 CREATE OR ALTER PROCEDURE dbo.PACO_TICKET_OBTENER_RECORDATORIOS
-    @Horas INT = 4
+    @Horas INT = 8
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @Desde DATETIME2(3) = DATEADD(HOUR, -IIF(@Horas < 1, 4, @Horas), SYSUTCDATETIME());
+    DECLARE @Desde DATETIME2(3) = DATEADD(HOUR, -IIF(@Horas < 1, 8, @Horas), SYSUTCDATETIME());
 
     ;WITH UltimoVendedor AS (
         SELECT IdTicket, MAX(FechaCreacion) FechaEnvio
